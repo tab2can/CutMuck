@@ -14,17 +14,20 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 CREATE TABLE IF NOT EXISTS channels (
-  slug TEXT PRIMARY KEY,
+  owner_email TEXT NOT NULL,
+  slug TEXT NOT NULL,
   display_name TEXT NOT NULL,
   avatar_url TEXT,
   banner_url TEXT,
   is_live INTEGER NOT NULL DEFAULT 0,
   raw_json TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (owner_email, slug)
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
+  owner_email TEXT NOT NULL DEFAULT '',
   kind TEXT NOT NULL,
   status TEXT NOT NULL,
   progress REAL NOT NULL DEFAULT 0,
@@ -154,6 +157,7 @@ async def get_db() -> aiosqlite.Connection:
     await db.commit()
     await ensure_admin_seed(db)
     await migrate_legacy_youtube_to_admin(db)
+    await migrate_ownership(db)
     return db
 
 
@@ -308,18 +312,83 @@ async def migrate_legacy_youtube_to_admin(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
-async def list_channels(db: aiosqlite.Connection) -> list[dict[str, Any]]:
-    cur = await db.execute("SELECT * FROM channels ORDER BY created_at ASC")
+async def migrate_ownership(db: aiosqlite.Connection) -> None:
+    """Ensure channels/jobs are scoped by owner_email; legacy rows → admin."""
+    admin = (settings.admin_email or "").strip().lower() or "admin@localhost"
+
+    cur = await db.execute("PRAGMA table_info(channels)")
+    channel_cols = {str(r[1]) for r in await cur.fetchall()}
+    if "owner_email" not in channel_cols:
+        await db.execute(
+            """
+            CREATE TABLE channels_v2 (
+              owner_email TEXT NOT NULL,
+              slug TEXT NOT NULL,
+              display_name TEXT NOT NULL,
+              avatar_url TEXT,
+              banner_url TEXT,
+              is_live INTEGER NOT NULL DEFAULT 0,
+              raw_json TEXT,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              PRIMARY KEY (owner_email, slug)
+            )
+            """
+        )
+        await db.execute(
+            """
+            INSERT INTO channels_v2 (
+              owner_email, slug, display_name, avatar_url, banner_url, is_live, raw_json, created_at
+            )
+            SELECT ?, slug, display_name, avatar_url, banner_url, is_live, raw_json, created_at
+            FROM channels
+            """,
+            (admin,),
+        )
+        await db.execute("DROP TABLE channels")
+        await db.execute("ALTER TABLE channels_v2 RENAME TO channels")
+        await db.commit()
+    else:
+        await db.execute(
+            "UPDATE channels SET owner_email = ? WHERE owner_email IS NULL OR trim(owner_email) = ''",
+            (admin,),
+        )
+        await db.commit()
+
+    cur = await db.execute("PRAGMA table_info(jobs)")
+    job_cols = {str(r[1]) for r in await cur.fetchall()}
+    if "owner_email" not in job_cols:
+        await db.execute("ALTER TABLE jobs ADD COLUMN owner_email TEXT NOT NULL DEFAULT ''")
+        await db.commit()
+    await db.execute(
+        "UPDATE jobs SET owner_email = ? WHERE owner_email IS NULL OR trim(owner_email) = ''",
+        (admin,),
+    )
+    await db.commit()
+
+
+async def list_channels(db: aiosqlite.Connection, owner_email: str) -> list[dict[str, Any]]:
+    owner = owner_email.strip().lower()
+    cur = await db.execute(
+        "SELECT * FROM channels WHERE owner_email = ? ORDER BY created_at ASC",
+        (owner,),
+    )
     rows = await cur.fetchall()
     return [dict(r) for r in rows]
 
 
-async def upsert_channel(db: aiosqlite.Connection, data: dict[str, Any]) -> dict[str, Any]:
+async def upsert_channel(
+    db: aiosqlite.Connection,
+    data: dict[str, Any],
+    *,
+    owner_email: str,
+) -> dict[str, Any]:
+    owner = owner_email.strip().lower()
+    slug = data["slug"]
     await db.execute(
         """
-        INSERT INTO channels(slug, display_name, avatar_url, banner_url, is_live, raw_json)
-        VALUES(?, ?, ?, ?, ?, ?)
-        ON CONFLICT(slug) DO UPDATE SET
+        INSERT INTO channels(owner_email, slug, display_name, avatar_url, banner_url, is_live, raw_json)
+        VALUES(?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(owner_email, slug) DO UPDATE SET
           display_name = excluded.display_name,
           avatar_url = excluded.avatar_url,
           banner_url = excluded.banner_url,
@@ -327,7 +396,8 @@ async def upsert_channel(db: aiosqlite.Connection, data: dict[str, Any]) -> dict
           raw_json = excluded.raw_json
         """,
         (
-            data["slug"],
+            owner,
+            slug,
             data["display_name"],
             data.get("avatar_url"),
             data.get("banner_url"),
@@ -336,30 +406,56 @@ async def upsert_channel(db: aiosqlite.Connection, data: dict[str, Any]) -> dict
         ),
     )
     await db.commit()
-    cur = await db.execute("SELECT * FROM channels WHERE slug = ?", (data["slug"],))
+    cur = await db.execute(
+        "SELECT * FROM channels WHERE owner_email = ? AND slug = ?",
+        (owner, slug),
+    )
     row = await cur.fetchone()
     return dict(row)
 
 
-async def get_channel(db: aiosqlite.Connection, slug: str) -> dict[str, Any] | None:
-    cur = await db.execute("SELECT * FROM channels WHERE slug = ?", (slug,))
+async def get_channel(
+    db: aiosqlite.Connection,
+    slug: str,
+    *,
+    owner_email: str,
+) -> dict[str, Any] | None:
+    owner = owner_email.strip().lower()
+    cur = await db.execute(
+        "SELECT * FROM channels WHERE owner_email = ? AND slug = ?",
+        (owner, slug),
+    )
     return row_to_dict(await cur.fetchone())
 
 
-async def delete_channel(db: aiosqlite.Connection, slug: str) -> bool:
-    cur = await db.execute("DELETE FROM channels WHERE slug = ?", (slug,))
+async def delete_channel(
+    db: aiosqlite.Connection,
+    slug: str,
+    *,
+    owner_email: str,
+) -> bool:
+    owner = owner_email.strip().lower()
+    cur = await db.execute(
+        "DELETE FROM channels WHERE owner_email = ? AND slug = ?",
+        (owner, slug),
+    )
     await db.commit()
     return cur.rowcount > 0
 
 
 async def create_job(db: aiosqlite.Connection, job: dict[str, Any]) -> dict[str, Any]:
+    owner = (job.get("owner_email") or "").strip().lower()
     await db.execute(
         """
-        INSERT INTO jobs(id, kind, status, progress, channel_slug, source_url, title, local_path, cut_path, error, meta_json)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO jobs(
+          id, owner_email, kind, status, progress, channel_slug, source_url,
+          title, local_path, cut_path, error, meta_json
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job["id"],
+            owner,
             job["kind"],
             job["status"],
             job.get("progress", 0),
@@ -389,6 +485,7 @@ async def update_job(db: aiosqlite.Connection, job_id: str, **fields: Any) -> di
         "meta_json",
         "source_url",
         "channel_slug",
+        "owner_email",
     }
     sets: list[str] = []
     values: list[Any] = []
@@ -421,10 +518,33 @@ async def get_job(db: aiosqlite.Connection, job_id: str) -> dict[str, Any] | Non
     return data
 
 
-async def list_jobs(db: aiosqlite.Connection, limit: int = 40) -> list[dict[str, Any]]:
+async def get_job_for_owner(
+    db: aiosqlite.Connection,
+    job_id: str,
+    owner_email: str,
+) -> dict[str, Any] | None:
+    job = await get_job(db, job_id)
+    if not job:
+        return None
+    if (job.get("owner_email") or "").strip().lower() != owner_email.strip().lower():
+        return None
+    return job
+
+
+async def list_jobs(
+    db: aiosqlite.Connection,
+    owner_email: str,
+    limit: int = 40,
+) -> list[dict[str, Any]]:
+    owner = owner_email.strip().lower()
     cur = await db.execute(
-        "SELECT * FROM jobs ORDER BY datetime(updated_at) DESC LIMIT ?",
-        (max(1, min(limit, 100)),),
+        """
+        SELECT * FROM jobs
+        WHERE owner_email = ?
+        ORDER BY datetime(updated_at) DESC
+        LIMIT ?
+        """,
+        (owner, max(1, min(limit, 100))),
     )
     rows = await cur.fetchall()
     out: list[dict[str, Any]] = []
@@ -439,7 +559,18 @@ async def list_jobs(db: aiosqlite.Connection, limit: int = 40) -> list[dict[str,
     return out
 
 
-async def delete_job(db: aiosqlite.Connection, job_id: str) -> bool:
-    cur = await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+async def delete_job(
+    db: aiosqlite.Connection,
+    job_id: str,
+    *,
+    owner_email: str | None = None,
+) -> bool:
+    if owner_email:
+        cur = await db.execute(
+            "DELETE FROM jobs WHERE id = ? AND owner_email = ?",
+            (job_id, owner_email.strip().lower()),
+        )
+    else:
+        cur = await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
     await db.commit()
     return cur.rowcount > 0

@@ -98,6 +98,6 @@ docker compose -f docker-compose.dev.yml up -d --build
 ## Notlar
 
 - Prod’da worker dışarı açık değildir; trafik Caddy → Next.js / API → worker.  
-- YouTube Client ID/Secret ve OAuth token’ları kullanıcıya özeldir (paylaşılan ayar yok).  
+- YouTube Client ID/Secret, kanallar ve Son işler kullanıcıya özeldir.  
 - Kapak yükleme için YouTube kanalının doğrulanmış olması gerekir.  
 - Sürüm: `VERSION` dosyası.

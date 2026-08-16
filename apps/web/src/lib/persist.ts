@@ -5,6 +5,11 @@ const CHANNELS_KEY = "cutmuck.channels";
 
 const THEMES: ThemeId[] = ["dark", "black", "light"];
 
+function channelsKey(ownerEmail?: string | null): string {
+  const email = (ownerEmail || "").trim().toLowerCase();
+  return email ? `${CHANNELS_KEY}.${email}` : CHANNELS_KEY;
+}
+
 export function isThemeId(value: unknown): value is ThemeId {
   return typeof value === "string" && (THEMES as string[]).includes(value);
 }
@@ -28,10 +33,10 @@ export function writeStoredTheme(theme: ThemeId) {
   }
 }
 
-export function readStoredChannels(): Channel[] {
+export function readStoredChannels(ownerEmail?: string | null): Channel[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = localStorage.getItem(CHANNELS_KEY);
+    const raw = localStorage.getItem(channelsKey(ownerEmail));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
@@ -47,7 +52,7 @@ export function readStoredChannels(): Channel[] {
   }
 }
 
-export function writeStoredChannels(channels: Channel[]) {
+export function writeStoredChannels(channels: Channel[], ownerEmail?: string | null) {
   if (typeof window === "undefined") return;
   try {
     const slim = channels.map((c) => ({
@@ -57,7 +62,7 @@ export function writeStoredChannels(channels: Channel[]) {
       banner_url: c.banner_url ?? null,
       is_live: c.is_live ? 1 : 0,
     }));
-    localStorage.setItem(CHANNELS_KEY, JSON.stringify(slim));
+    localStorage.setItem(channelsKey(ownerEmail), JSON.stringify(slim));
   } catch {
     // ignore
   }

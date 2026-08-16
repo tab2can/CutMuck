@@ -11,12 +11,14 @@ import { useNativeContextBlock } from "@/components/ContextMenu";
 import { useTheme } from "@/components/ThemeProvider";
 import { useToast } from "@/components/Toast";
 import { readStoredChannels, writeStoredChannels } from "@/lib/persist";
+import { useAuth } from "@/components/AuthProvider";
 
 const LIVE_POLL_MS = 45_000;
 
 export default function HomePage() {
   useNativeContextBlock(true);
   const { refreshSettings } = useTheme();
+  const { user } = useAuth();
   const { push } = useToast();
   const [channels, setChannels] = useState<Channel[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
@@ -24,16 +26,21 @@ export default function HomePage() {
   const [bootError, setBootError] = useState<string | null>(null);
   const [youtubeNotice, setYoutubeNotice] = useState<string | null>(null);
 
-  // Paint cached channels before first paint (no empty flash)
+  // Paint cached channels before first paint (no empty flash) — per user
   useLayoutEffect(() => {
-    const cached = readStoredChannels();
+    const cached = readStoredChannels(user?.email);
     if (cached.length) setChannels(cached);
-  }, []);
+    else setChannels([]);
+    setSelectedSlug(null);
+  }, [user?.email]);
 
-  const commitChannels = useCallback((list: Channel[]) => {
-    setChannels(list);
-    writeStoredChannels(list);
-  }, []);
+  const commitChannels = useCallback(
+    (list: Channel[]) => {
+      setChannels(list);
+      writeStoredChannels(list, user?.email);
+    },
+    [user?.email]
+  );
 
   const loadChannels = useCallback(
     async (opts?: { refreshLive?: boolean }) => {
@@ -92,21 +99,24 @@ export default function HomePage() {
 
   const selected = channels.find((c) => c.slug === selectedSlug) || null;
 
-  const patchChannel = useCallback((ch: Channel) => {
-    setChannels((prev) => {
-      const idx = prev.findIndex((p) => p.slug === ch.slug);
-      const next =
-        idx < 0
-          ? [...prev, ch]
-          : (() => {
-              const copy = [...prev];
-              copy[idx] = { ...copy[idx], ...ch };
-              return copy;
-            })();
-      writeStoredChannels(next);
-      return next;
-    });
-  }, []);
+  const patchChannel = useCallback(
+    (ch: Channel) => {
+      setChannels((prev) => {
+        const idx = prev.findIndex((p) => p.slug === ch.slug);
+        const next =
+          idx < 0
+            ? [...prev, ch]
+            : (() => {
+                const copy = [...prev];
+                copy[idx] = { ...copy[idx], ...ch };
+                return copy;
+              })();
+        writeStoredChannels(next, user?.email);
+        return next;
+      });
+    },
+    [user?.email]
+  );
 
   return (
     <div className="app-shell">
@@ -122,7 +132,7 @@ export default function HomePage() {
         onRemoved={(slug) => {
           setChannels((prev) => {
             const next = prev.filter((c) => c.slug !== slug);
-            writeStoredChannels(next);
+            writeStoredChannels(next, user?.email);
             return next;
           });
           if (selectedSlug === slug) setSelectedSlug(null);

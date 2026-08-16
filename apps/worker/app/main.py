@@ -108,6 +108,14 @@ def require_admin(request: Request) -> SessionUser:
     return user
 
 
+async def owned_job(db: Any, request: Request, job_id: str) -> dict[str, Any]:
+    user = current_user(request)
+    job = await database.get_job_for_owner(db, job_id, user.email)
+    if not job:
+        raise HTTPException(404, "Job bulunamadı")
+    return job
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
     path = request.url.path
@@ -424,11 +432,12 @@ async def put_settings(request: Request, body: SettingsUpdate) -> dict[str, Any]
 
 
 @app.get("/channels")
-async def channels_list(refresh: int = 0) -> list[dict[str, Any]]:
+async def channels_list(request: Request, refresh: int = 0) -> list[dict[str, Any]]:
     """List saved channels. refresh=1 re-checks Kick live status for each."""
+    user = current_user(request)
     db = await database.get_db()
     try:
-        channels = await database.list_channels(db)
+        channels = await database.list_channels(db, user.email)
         if not refresh:
             return channels
 
@@ -438,7 +447,7 @@ async def channels_list(refresh: int = 0) -> list[dict[str, Any]]:
                 return ch
             try:
                 fresh = await asyncio.to_thread(fetch_channel, slug)
-                return await database.upsert_channel(db, fresh)
+                return await database.upsert_channel(db, fresh, owner_email=user.email)
             except KickError:
                 # Kick unreachable — keep cached row but don't invent live
                 return ch
@@ -456,13 +465,14 @@ async def channels_list(refresh: int = 0) -> list[dict[str, Any]]:
 
 
 @app.post("/channels/refresh-live")
-async def channels_refresh_live() -> list[dict[str, Any]]:
+async def channels_refresh_live(request: Request) -> list[dict[str, Any]]:
     """Force-refresh is_live for all saved channels."""
-    return await channels_list(refresh=1)
+    return await channels_list(request, refresh=1)
 
 
 @app.post("/channels")
-async def channels_create(body: ChannelCreate) -> dict[str, Any]:
+async def channels_create(request: Request, body: ChannelCreate) -> dict[str, Any]:
+    user = current_user(request)
     try:
         slug = parse_kick_slug(body.input)
         info = fetch_channel(slug)
@@ -472,21 +482,22 @@ async def channels_create(body: ChannelCreate) -> dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
     db = await database.get_db()
     try:
-        return await database.upsert_channel(db, info)
+        return await database.upsert_channel(db, info, owner_email=user.email)
     finally:
         await db.close()
 
 
 @app.get("/channels/{slug}")
-async def channels_get(slug: str) -> dict[str, Any]:
+async def channels_get(request: Request, slug: str) -> dict[str, Any]:
+    user = current_user(request)
     db = await database.get_db()
     try:
-        channel = await database.get_channel(db, slug)
+        channel = await database.get_channel(db, slug, owner_email=user.email)
         if not channel:
             raise HTTPException(404, "Kanal bulunamadı")
         try:
             fresh = fetch_channel(slug)
-            channel = await database.upsert_channel(db, fresh)
+            channel = await database.upsert_channel(db, fresh, owner_email=user.email)
         except KickError:
             pass
         return channel
@@ -495,10 +506,11 @@ async def channels_get(slug: str) -> dict[str, Any]:
 
 
 @app.delete("/channels/{slug}")
-async def channels_delete(slug: str) -> dict[str, bool]:
+async def channels_delete(request: Request, slug: str) -> dict[str, bool]:
+    user = current_user(request)
     db = await database.get_db()
     try:
-        ok = await database.delete_channel(db, slug)
+        ok = await database.delete_channel(db, slug, owner_email=user.email)
         if not ok:
             raise HTTPException(404, "Kanal bulunamadı")
         return {"ok": True}
@@ -507,7 +519,15 @@ async def channels_delete(slug: str) -> dict[str, bool]:
 
 
 @app.get("/channels/{slug}/vods")
-async def channels_vods(slug: str) -> list[dict[str, Any]]:
+async def channels_vods(request: Request, slug: str) -> list[dict[str, Any]]:
+    user = current_user(request)
+    db = await database.get_db()
+    try:
+        channel = await database.get_channel(db, slug, owner_email=user.email)
+        if not channel:
+            raise HTTPException(404, "Kanal bulunamadı")
+    finally:
+        await db.close()
     try:
         return fetch_vods(slug)
     except KickError as exc:
@@ -515,7 +535,15 @@ async def channels_vods(slug: str) -> list[dict[str, Any]]:
 
 
 @app.get("/channels/{slug}/clips")
-async def channels_clips(slug: str) -> list[dict[str, Any]]:
+async def channels_clips(request: Request, slug: str) -> list[dict[str, Any]]:
+    user = current_user(request)
+    db = await database.get_db()
+    try:
+        channel = await database.get_channel(db, slug, owner_email=user.email)
+        if not channel:
+            raise HTTPException(404, "Kanal bulunamadı")
+    finally:
+        await db.close()
     try:
         return fetch_clips(slug)
     except KickError as exc:
@@ -523,21 +551,23 @@ async def channels_clips(slug: str) -> list[dict[str, Any]]:
 
 
 @app.get("/jobs")
-async def jobs_list(limit: int = 40) -> list[JobOut]:
+async def jobs_list(request: Request, limit: int = 40) -> list[JobOut]:
+    user = current_user(request)
     db = await database.get_db()
     try:
-        jobs = await database.list_jobs(db, limit=limit)
+        jobs = await database.list_jobs(db, user.email, limit=limit)
         return [job_urls(j) for j in jobs]
     finally:
         await db.close()
 
 
 @app.delete("/jobs/{job_id}")
-async def jobs_delete(job_id: str) -> dict[str, bool]:
+async def jobs_delete(request: Request, job_id: str) -> dict[str, bool]:
+    user = current_user(request)
     await stop_live_ring(job_id)
     db = await database.get_db()
     try:
-        job = await database.get_job(db, job_id)
+        job = await database.get_job_for_owner(db, job_id, user.email)
         if not job:
             raise HTTPException(404, "Job bulunamadı")
         for key in ("local_path", "cut_path"):
@@ -547,7 +577,7 @@ async def jobs_delete(job_id: str) -> dict[str, bool]:
                     Path(p).unlink(missing_ok=True)
                 except OSError:
                     pass
-        ok = await database.delete_job(db, job_id)
+        ok = await database.delete_job(db, job_id, owner_email=user.email)
         return {"ok": ok}
     finally:
         await db.close()
@@ -555,8 +585,9 @@ async def jobs_delete(job_id: str) -> dict[str, bool]:
 
 @app.post("/jobs/download")
 @app.post("/jobs/open")
-async def jobs_open(body: DownloadRequest) -> JobOut:
+async def jobs_open(request: Request, body: DownloadRequest) -> JobOut:
     """Open a VOD/clip for editing via remote Kick HLS (no full download)."""
+    user = current_user(request)
     kind = body.kind or "vod"
     hls_url = None
     live_playback = None
@@ -631,6 +662,7 @@ async def jobs_open(body: DownloadRequest) -> JobOut:
             db,
             {
                 "id": job_id,
+                "owner_email": user.email,
                 "kind": "live" if mode == "live" else "remote",
                 "status": "ready",
                 "progress": 100,
@@ -702,24 +734,23 @@ async def jobs_open(body: DownloadRequest) -> JobOut:
 
 
 @app.post("/jobs/open-live")
-async def jobs_open_live(body: LiveOpenRequest) -> JobOut:
+async def jobs_open_live(request: Request, body: LiveOpenRequest) -> JobOut:
     return await jobs_open(
+        request,
         DownloadRequest(
             kind="live",
             channel_slug=body.channel_slug,
             title=body.title,
             vod_url="",
-        )
+        ),
     )
 
 
 @app.get("/jobs/{job_id}")
-async def jobs_get(job_id: str) -> JobOut:
+async def jobs_get(request: Request, job_id: str) -> JobOut:
     db = await database.get_db()
     try:
-        job = await database.get_job(db, job_id)
-        if not job:
-            raise HTTPException(404, "Job bulunamadı")
+        job = await owned_job(db, request, job_id)
         # Background task died (reload/crash) but DB still says uploading
         if job.get("status") in {"queued", "exporting", "uploading"}:
             task = _youtube_tasks.get(job_id)
@@ -739,13 +770,11 @@ async def jobs_get(job_id: str) -> JobOut:
 
 
 @app.get("/jobs/{job_id}/stream.m3u8")
-async def jobs_stream_master(job_id: str) -> Response:
+async def jobs_stream_master(request: Request, job_id: str) -> Response:
     """Serve a preview playlist (VOD seekable, or live sliding window)."""
     db = await database.get_db()
     try:
-        job = await database.get_job(db, job_id)
-        if not job:
-            raise HTTPException(404, "Job bulunamadı")
+        job = await owned_job(db, request, job_id)
         meta = job.get("meta") or {}
         hls_url = meta.get("dvr_hls_url") or meta.get("hls_url") or meta.get("live_edge_url")
         if not hls_url:
@@ -1015,12 +1044,10 @@ async def _ensure_segment_file(
 
 
 @app.post("/jobs/{job_id}/cut")
-async def jobs_cut(job_id: str, body: CutRequest) -> JobOut:
+async def jobs_cut(request: Request, job_id: str, body: CutRequest) -> JobOut:
     db = await database.get_db()
     try:
-        job = await database.get_job(db, job_id)
-        if not job:
-            raise HTTPException(404, "Job bulunamadı")
+        job = await owned_job(db, request, job_id)
         updated = await _ensure_segment_file(db, job, body.start_sec, body.end_sec)
         return job_urls(updated)
     finally:
@@ -1263,12 +1290,10 @@ async def _run_youtube_pipeline(
 
 
 @app.put("/jobs/{job_id}/timeline")
-async def jobs_timeline(job_id: str, body: TimelineUpdate) -> JobOut:
+async def jobs_timeline(request: Request, job_id: str, body: TimelineUpdate) -> JobOut:
     db = await database.get_db()
     try:
-        job = await database.get_job(db, job_id)
-        if not job:
-            raise HTTPException(404, "Job bulunamadı")
+        job = await owned_job(db, request, job_id)
         meta = job.get("meta") or {}
         meta["overlays"] = [o.model_dump() for o in body.overlays]
         # Force re-export next time
@@ -1280,12 +1305,10 @@ async def jobs_timeline(job_id: str, body: TimelineUpdate) -> JobOut:
 
 
 @app.get("/jobs/{job_id}/ring")
-async def jobs_ring(job_id: str) -> dict[str, Any]:
+async def jobs_ring(request: Request, job_id: str) -> dict[str, Any]:
     db = await database.get_db()
     try:
-        job = await database.get_job(db, job_id)
-        if not job:
-            raise HTTPException(404, "Job bulunamadı")
+        job = await owned_job(db, request, job_id)
         status = ring_status(job_id)
         if status.get("window_path"):
             await database.update_job(
@@ -1309,9 +1332,7 @@ async def jobs_youtube(request: Request, job_id: str, body: YoutubeUploadRequest
     user = current_user(request)
     db = await database.get_db()
     try:
-        job = await database.get_job(db, job_id)
-        if not job:
-            raise HTTPException(404, "Job bulunamadı")
+        job = await owned_job(db, request, job_id)
 
         existing = _youtube_tasks.get(job_id)
         if existing and not existing.done():
@@ -1375,12 +1396,10 @@ async def jobs_youtube(request: Request, job_id: str, body: YoutubeUploadRequest
 
 
 @app.get("/file/{job_id}")
-async def file_for_job(job_id: str, kind: str = "source") -> FileResponse:
+async def file_for_job(request: Request, job_id: str, kind: str = "source") -> FileResponse:
     db = await database.get_db()
     try:
-        job = await database.get_job(db, job_id)
-        if not job:
-            raise HTTPException(404, "Job bulunamadı")
+        job = await owned_job(db, request, job_id)
         path_str = job.get("cut_path") if kind == "cut" else job.get("local_path") or job.get("cut_path")
         if not path_str:
             raise HTTPException(404, "Dosya yok")
