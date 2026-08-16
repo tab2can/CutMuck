@@ -400,22 +400,25 @@ async def auth_users_remove(request: Request, email: str) -> dict[str, bool]:
 
 
 @app.get("/settings")
-async def get_settings() -> dict[str, Any]:
+async def get_settings(request: Request) -> dict[str, Any]:
+    user = current_user(request)
     db = await database.get_db()
     try:
-        return await database.get_all_settings(db)
+        return await database.get_user_settings_public(db, user.email)
     finally:
         await db.close()
 
 
 @app.put("/settings")
-async def put_settings(body: SettingsUpdate) -> dict[str, Any]:
+async def put_settings(request: Request, body: SettingsUpdate) -> dict[str, Any]:
+    user = current_user(request)
     db = await database.get_db()
     try:
         payload = body.model_dump(exclude_none=True)
-        for key, value in payload.items():
-            await database.set_setting(db, key, str(value))
-        return await database.get_all_settings(db)
+        # Never accept refresh_token via generic settings PUT
+        payload.pop("youtube_refresh_token", None)
+        await database.update_user_settings(db, user.email, payload)
+        return await database.get_user_settings_public(db, user.email)
     finally:
         await db.close()
 
@@ -1026,15 +1029,19 @@ async def jobs_cut(job_id: str, body: CutRequest) -> JobOut:
 
 @app.get("/auth/youtube/start")
 async def youtube_start(request: Request) -> dict[str, str]:
+    user = current_user(request)
     db = await database.get_db()
     try:
-        client_id = await database.get_setting(db, "youtube_client_id")
-        client_secret = await database.get_setting(db, "youtube_client_secret")
+        us = await database.get_user_settings(db, user.email)
+        client_id = (us.get("youtube_client_id") or "").strip()
+        client_secret = (us.get("youtube_client_secret") or "").strip()
         if not client_id or not client_secret:
             raise HTTPException(400, "YouTube Client ID/Secret ayarlarda gerekli")
         redirect_uri = f"{settings.web_origin.rstrip('/')}/api/auth/youtube/callback"
         state = new_oauth_state()
-        await database.set_setting(db, "youtube_oauth_state", state)
+        await database.update_user_settings(
+            db, user.email, {"youtube_oauth_state": state}
+        )
         auth_url = build_auth_url(
             client_id=client_id,
             redirect_uri=redirect_uri,
@@ -1047,29 +1054,35 @@ async def youtube_start(request: Request) -> dict[str, str]:
 
 @app.get("/auth/youtube/callback")
 async def youtube_callback(
+    request: Request,
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
 ) -> RedirectResponse:
+    origin = settings.web_origin.rstrip("/")
     if error:
-        return RedirectResponse(
-            f"{settings.web_origin}/?youtube=error&reason={quote(error)}"
-        )
+        return RedirectResponse(f"{origin}/?youtube=error&reason={quote(error)}")
     if not code:
-        return RedirectResponse(f"{settings.web_origin}/?youtube=error&reason=missing_code")
+        return RedirectResponse(f"{origin}/?youtube=error&reason=missing_code")
+
+    try:
+        user = current_user(request)
+    except HTTPException:
+        return RedirectResponse(f"{origin}/?youtube=error&reason=login_required")
 
     db = await database.get_db()
     try:
-        saved_state = await database.get_setting(db, "youtube_oauth_state")
+        us = await database.get_user_settings(db, user.email)
+        saved_state = (us.get("youtube_oauth_state") or "").strip()
         if not saved_state or not state or saved_state != state:
-            return RedirectResponse(f"{settings.web_origin}/?youtube=error&reason=state_mismatch")
+            return RedirectResponse(f"{origin}/?youtube=error&reason=state_mismatch")
 
-        client_id = await database.get_setting(db, "youtube_client_id")
-        client_secret = await database.get_setting(db, "youtube_client_secret")
+        client_id = (us.get("youtube_client_id") or "").strip()
+        client_secret = (us.get("youtube_client_secret") or "").strip()
         if not client_id or not client_secret:
-            return RedirectResponse(f"{settings.web_origin}/?youtube=error&reason=missing_credentials")
+            return RedirectResponse(f"{origin}/?youtube=error&reason=missing_credentials")
 
-        redirect_uri = f"{settings.web_origin.rstrip('/')}/api/auth/youtube/callback"
+        redirect_uri = f"{origin}/api/auth/youtube/callback"
         try:
             tokens = await asyncio.to_thread(
                 exchange_code_for_tokens,
@@ -1080,16 +1093,22 @@ async def youtube_callback(
             )
         except YoutubeError as exc:
             return RedirectResponse(
-                f"{settings.web_origin}/?youtube=error&reason={quote(str(exc)[:200])}"
+                f"{origin}/?youtube=error&reason={quote(str(exc)[:200])}"
             )
         except Exception as exc:  # noqa: BLE001
             return RedirectResponse(
-                f"{settings.web_origin}/?youtube=error&reason={quote(str(exc)[:200])}"
+                f"{origin}/?youtube=error&reason={quote(str(exc)[:200])}"
             )
 
-        await database.set_setting(db, "youtube_refresh_token", tokens["refresh_token"])
-        await database.set_setting(db, "youtube_oauth_state", "")
-        return RedirectResponse(f"{settings.web_origin}/?youtube=connected")
+        await database.update_user_settings(
+            db,
+            user.email,
+            {
+                "youtube_refresh_token": tokens["refresh_token"],
+                "youtube_oauth_state": "",
+            },
+        )
+        return RedirectResponse(f"{origin}/?youtube=connected")
     finally:
         await db.close()
 
@@ -1120,6 +1139,7 @@ def _sync_upload_progress(job_id: str, frac: float) -> None:
 async def _run_youtube_pipeline(
     job_id: str,
     *,
+    owner_email: str,
     title: str,
     description: str,
     privacy: str,
@@ -1149,9 +1169,10 @@ async def _run_youtube_pipeline(
             )
             return
 
-        client_id = await database.get_setting(db, "youtube_client_id")
-        client_secret = await database.get_setting(db, "youtube_client_secret")
-        refresh = await database.get_setting(db, "youtube_refresh_token")
+        us = await database.get_user_settings(db, owner_email)
+        client_id = (us.get("youtube_client_id") or "").strip()
+        client_secret = (us.get("youtube_client_secret") or "").strip()
+        refresh = (us.get("youtube_refresh_token") or "").strip()
         if not client_id or not client_secret or not refresh:
             await database.update_job(
                 db,
@@ -1283,8 +1304,9 @@ async def jobs_ring(job_id: str) -> dict[str, Any]:
 
 
 @app.post("/jobs/{job_id}/youtube")
-async def jobs_youtube(job_id: str, body: YoutubeUploadRequest) -> JobOut:
+async def jobs_youtube(request: Request, job_id: str, body: YoutubeUploadRequest) -> JobOut:
     """Start export+upload in background; client should poll GET /jobs/{id}."""
+    user = current_user(request)
     db = await database.get_db()
     try:
         job = await database.get_job(db, job_id)
@@ -1317,9 +1339,10 @@ async def jobs_youtube(job_id: str, body: YoutubeUploadRequest) -> JobOut:
         if end - start > 8 * 60 * 60:
             raise HTTPException(400, "Kesit en fazla 8 saat olabilir (disk/süre koruması)")
 
-        client_id = await database.get_setting(db, "youtube_client_id")
-        client_secret = await database.get_setting(db, "youtube_client_secret")
-        refresh = await database.get_setting(db, "youtube_refresh_token")
+        us = await database.get_user_settings(db, user.email)
+        client_id = (us.get("youtube_client_id") or "").strip()
+        client_secret = (us.get("youtube_client_secret") or "").strip()
+        refresh = (us.get("youtube_refresh_token") or "").strip()
         if not client_id or not client_secret or not refresh:
             raise HTTPException(400, "YouTube OAuth tamamlanmamış — Ayarlar'dan bağlayın")
 
@@ -1335,6 +1358,7 @@ async def jobs_youtube(job_id: str, body: YoutubeUploadRequest) -> JobOut:
         task = asyncio.create_task(
             _run_youtube_pipeline(
                 job_id,
+                owner_email=user.email,
                 title=body.title,
                 description=body.description,
                 privacy=body.privacy,

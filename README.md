@@ -85,16 +85,17 @@ docker compose -f docker-compose.dev.yml up -d --build
 
 | Method | Path | Açıklama |
 |--------|------|----------|
-| GET/PUT | `/settings` | Tema, YouTube kimlik |
+| GET/PUT | `/settings` | Kullanıcıya özel tema + YouTube kimlik |
 | GET/POST/DELETE | `/channels` | Kanallar |
 | POST | `/jobs/open-live` | Canlı + DVR |
-| POST | `/jobs/{id}/youtube` | Export + upload |
+| POST | `/jobs/{id}/youtube` | Export + upload (oturum sahibinin YouTube’u) |
 | GET | `/auth/youtube/start` | OAuth |
 
 ---
 
 ## Notlar
 
-- Prod’da worker dışarı açık değildir; trafik Caddy → Next.js → worker.  
+- Prod’da worker dışarı açık değildir; trafik Caddy → Next.js / API → worker.  
+- YouTube Client ID/Secret ve OAuth token’ları kullanıcıya özeldir (paylaşılan ayar yok).  
 - Kapak yükleme için YouTube kanalının doğrulanmış olması gerekir.  
 - Sürüm: `VERSION` dosyası.

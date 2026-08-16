@@ -185,9 +185,10 @@ function SettingsBody({
         </section>
 
         <section className="settings-section">
-          <h3>YouTube API</h3>
+          <h3>YouTube API (bu hesap)</h3>
           <p className="muted">
-            Google Cloud → Authorized redirect URIs (giriş + YouTube):
+            Client ID / Secret ve bağlantı yalnızca sizin Google hesabınıza aittir;
+            diğer kullanıcılarla paylaşılmaz. Google Cloud → Authorized redirect URIs:
           </p>
           <div className="uri-box">
             <code>{loginRedirectUri()}</code>

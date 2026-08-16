@@ -46,6 +46,17 @@ CREATE TABLE IF NOT EXISTS allowed_emails (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   created_by TEXT
 );
+
+CREATE TABLE IF NOT EXISTS user_settings (
+  email TEXT PRIMARY KEY,
+  theme TEXT NOT NULL DEFAULT 'dark',
+  youtube_client_id TEXT NOT NULL DEFAULT '',
+  youtube_client_secret TEXT NOT NULL DEFAULT '',
+  youtube_refresh_token TEXT NOT NULL DEFAULT '',
+  youtube_oauth_state TEXT NOT NULL DEFAULT '',
+  youtube_privacy_default TEXT NOT NULL DEFAULT 'unlisted',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -142,6 +153,7 @@ async def get_db() -> aiosqlite.Connection:
     await db.executescript(SCHEMA)
     await db.commit()
     await ensure_admin_seed(db)
+    await migrate_legacy_youtube_to_admin(db)
     return db
 
 
@@ -168,28 +180,132 @@ async def set_setting(db: aiosqlite.Connection, key: str, value: str) -> None:
 
 
 async def get_all_settings(db: aiosqlite.Connection) -> dict[str, Any]:
+    """Legacy global settings (non-secret app defaults only)."""
     cur = await db.execute("SELECT key, value FROM settings")
     rows = await cur.fetchall()
     out: dict[str, Any] = {}
     for row in rows:
         key = row["key"]
-        value = row["value"]
-        if key in {"youtube_client_secret", "youtube_refresh_token"} and value:
-            out[key] = "***"
-            out[f"{key}_set"] = True
-        else:
-            out[key] = value
-            if key.endswith("_secret") or key.endswith("_token"):
-                out[f"{key}_set"] = bool(value)
+        # Never expose legacy shared YouTube secrets via global settings
+        if key.startswith("youtube_"):
+            continue
+        out[key] = row["value"]
     defaults = {
         "theme": "dark",
         "worker_public_url": settings.public_base_url,
-        "youtube_client_id": "",
-        "youtube_privacy_default": "unlisted",
     }
     for k, v in defaults.items():
         out.setdefault(k, v)
     return out
+
+
+def _mask_user_settings(row: dict[str, Any]) -> dict[str, Any]:
+    secret = row.get("youtube_client_secret") or ""
+    refresh = row.get("youtube_refresh_token") or ""
+    return {
+        "theme": row.get("theme") or "dark",
+        "worker_public_url": settings.public_base_url,
+        "youtube_client_id": row.get("youtube_client_id") or "",
+        "youtube_client_secret": "***" if secret else "",
+        "youtube_client_secret_set": bool(secret),
+        "youtube_refresh_token_set": bool(refresh),
+        "youtube_privacy_default": row.get("youtube_privacy_default") or "unlisted",
+    }
+
+
+async def ensure_user_settings(db: aiosqlite.Connection, email: str) -> dict[str, Any]:
+    email = email.strip().lower()
+    cur = await db.execute("SELECT * FROM user_settings WHERE email = ?", (email,))
+    row = await cur.fetchone()
+    if row:
+        return dict(row)
+    await db.execute(
+        "INSERT INTO user_settings(email) VALUES(?)",
+        (email,),
+    )
+    await db.commit()
+    cur = await db.execute("SELECT * FROM user_settings WHERE email = ?", (email,))
+    row = await cur.fetchone()
+    assert row is not None
+    return dict(row)
+
+
+async def get_user_settings(db: aiosqlite.Connection, email: str) -> dict[str, Any]:
+    return await ensure_user_settings(db, email)
+
+
+async def get_user_settings_public(db: aiosqlite.Connection, email: str) -> dict[str, Any]:
+    row = await ensure_user_settings(db, email)
+    return _mask_user_settings(row)
+
+
+async def update_user_settings(
+    db: aiosqlite.Connection,
+    email: str,
+    patch: dict[str, Any],
+) -> dict[str, Any]:
+    await ensure_user_settings(db, email)
+    allowed = {
+        "theme",
+        "youtube_client_id",
+        "youtube_client_secret",
+        "youtube_refresh_token",
+        "youtube_oauth_state",
+        "youtube_privacy_default",
+    }
+    sets: list[str] = []
+    values: list[Any] = []
+    for key, value in patch.items():
+        if key not in allowed or value is None:
+            continue
+        sets.append(f"{key} = ?")
+        values.append(str(value))
+    if not sets:
+        return await get_user_settings(db, email)
+    sets.append("updated_at = datetime('now')")
+    values.append(email.strip().lower())
+    await db.execute(
+        f"UPDATE user_settings SET {', '.join(sets)} WHERE email = ?",
+        values,
+    )
+    await db.commit()
+    return await get_user_settings(db, email)
+
+
+async def migrate_legacy_youtube_to_admin(db: aiosqlite.Connection) -> None:
+    """One-time: move shared settings youtube_* into ADMIN_EMAIL user_settings."""
+    admin = (settings.admin_email or "").strip().lower()
+    if not admin:
+        return
+    keys = (
+        "youtube_client_id",
+        "youtube_client_secret",
+        "youtube_refresh_token",
+        "youtube_oauth_state",
+        "youtube_privacy_default",
+    )
+    legacy: dict[str, str] = {}
+    for key in keys:
+        val = await get_setting(db, key)
+        if val:
+            legacy[key] = val
+    if not legacy:
+        return
+
+    row = await ensure_user_settings(db, admin)
+    patch: dict[str, Any] = {}
+    for key, val in legacy.items():
+        if not (row.get(key) or "").strip():
+            patch[key] = val
+    theme = await get_setting(db, "theme")
+    if theme and not (row.get("theme") or "").strip():
+        patch["theme"] = theme
+    if patch:
+        await update_user_settings(db, admin, patch)
+
+    for key in keys:
+        await db.execute("DELETE FROM settings WHERE key = ?", (key,))
+    await db.commit()
 
 
 async def list_channels(db: aiosqlite.Connection) -> list[dict[str, Any]]:
