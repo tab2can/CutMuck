@@ -370,8 +370,11 @@ function AllowedUsersAdmin() {
     <section className="settings-section">
       <h3>İzinli kullanıcılar</h3>
       <p className="muted">
-        Yalnızca buraya eklenen Google hesapları giriş yapabilir. Siz yönetici olarak
-        her zaman erişebilirsiniz.
+        Yalnızca buraya eklenen Google hesapları CutMuck’a girebilir. Liste anında
+        geçerli olur. Google’da <strong>403: org_internal</strong> görürseniz bu liste
+        değil: Cloud Console → OAuth consent screen → User type’ı{" "}
+        <strong>External</strong> yapın (Internal yalnızca kuruluş hesabına izin verir).
+        Testing modundaysanız her e-postayı Test users’a da ekleyin.
       </p>
       <div className="allowed-add-row">
         <input

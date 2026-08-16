@@ -47,6 +47,8 @@ https://YOUR_DOMAIN/api/auth/youtube/callback
 
 İlk giriş: `ADMIN_EMAIL` (varsayılan `can@pekgezer.com`) Google hesabı ile. Diğer kullanıcıları Ayarlar → İzinli kullanıcılar’dan ekleyin.
 
+Google’da `403: org_internal` alırsanız OAuth consent screen **Internal** demektir → **External** yapın. App “Testing” ise her maili **Test users** listesine ekleyin.
+
 ---
 
 ## Windows — geliştirme
