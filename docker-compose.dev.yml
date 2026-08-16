@@ -1,0 +1,27 @@
+# CutMuck local Docker (no TLS) — for development machines
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    ports:
+      - "8787:8787"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8787"
+      CUTMUCK_DATA: /data
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8787}
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+    volumes:
+      - ./data:/data
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      WORKER_URL: http://worker:8787
+    depends_on:
+      - worker

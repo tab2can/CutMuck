@@ -1,0 +1,1 @@
+"""CutMuck local worker."""

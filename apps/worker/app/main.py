@@ -1,0 +1,1128 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import re
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote, urljoin, urlparse
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+from . import db as database
+from .config import settings
+from .ffmpeg_util import FFmpegError, apply_overlays, cut_media, probe_duration
+from .kick import (
+    KickError,
+    ensure_live_playlist,
+    fetch_channel,
+    fetch_clip_playback,
+    fetch_clips,
+    fetch_hls_bytes,
+    fetch_live_playback,
+    fetch_vod_playback,
+    fetch_vods,
+    normalize_vod_playlist,
+    parse_vod_uuid,
+    pick_media_playlist,
+    playlist_duration_seconds,
+)
+from .live_buffer import ring_status, ring_window_path, start_live_ring, stop_live_ring
+from .models import (
+    ChannelCreate,
+    CutRequest,
+    DownloadRequest,
+    JobOut,
+    LiveOpenRequest,
+    SettingsUpdate,
+    TimelineUpdate,
+    YoutubeUploadRequest,
+    parse_kick_slug,
+)
+from .stream import DownloadError, download_segment
+from .youtube_util import (
+    YoutubeError,
+    build_auth_url,
+    exchange_code_for_tokens,
+    new_oauth_state,
+    set_thumbnail,
+    upload_video,
+)
+
+app = FastAPI(title="CutMuck Worker", version="0.2.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.web_origin, "http://127.0.0.1:3000", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/media", StaticFiles(directory=str(settings.media_dir)), name="media")
+
+
+def job_urls(job: dict[str, Any]) -> JobOut:
+    media_url = None
+    cut_url = None
+    stream_url = None
+    cut_size = None
+    meta = job.get("meta") or {}
+    if job.get("local_path"):
+        name = Path(job["local_path"]).name
+        media_url = f"/media/{quote(name)}"
+    if job.get("cut_path"):
+        name = Path(job["cut_path"]).name
+        cut_url = f"/media/{quote(name)}"
+        try:
+            cut_size = Path(job["cut_path"]).stat().st_size
+        except OSError:
+            cut_size = None
+    if meta.get("hls_url") or job.get("source_url") or meta.get("mode") == "live":
+        stream_url = f"/jobs/{job['id']}/stream.m3u8"
+    return JobOut(
+        id=job["id"],
+        kind=job["kind"],
+        status=job["status"],
+        progress=float(job.get("progress") or 0),
+        channel_slug=job.get("channel_slug"),
+        source_url=job.get("source_url"),
+        title=job.get("title"),
+        local_path=job.get("local_path"),
+        cut_path=job.get("cut_path"),
+        error=job.get("error"),
+        meta=meta,
+        media_url=media_url,
+        cut_url=cut_url,
+        stream_url=stream_url,
+        cut_size_bytes=cut_size,
+        updated_at=job.get("updated_at"),
+    )
+
+
+def _b64url(value: str) -> str:
+    return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _unb64url(value: str) -> str:
+    pad = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value + pad).decode("utf-8")
+
+
+def _proxy_seg(abs_url: str, *, live: bool = False) -> str:
+    # Browser talks to Next (/api/...), which proxies to the worker.
+    q = f"u={_b64url(abs_url)}"
+    if live:
+        q += "&live=1"
+    return f"/api/hls/seg?{q}"
+
+
+def _rewrite_playlist(content: str, playlist_url: str, *, as_vod: bool = False, live: bool = False) -> str:
+    base = playlist_url.rsplit("/", 1)[0] + "/"
+    if live:
+        content = ensure_live_playlist(content)
+    elif as_vod:
+        content = normalize_vod_playlist(content)
+    lines: list[str] = []
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            if 'URI="' in raw:
+
+                def repl(match: re.Match[str]) -> str:
+                    abs_uri = urljoin(base, match.group(1))
+                    return f'URI="{_proxy_seg(abs_uri, live=live)}"'
+
+                lines.append(re.sub(r'URI="([^"]+)"', repl, raw))
+            else:
+                lines.append(raw)
+            continue
+        abs_url = urljoin(base, line)
+        lines.append(_proxy_seg(abs_url, live=live))
+    return "\n".join(lines) + "\n"
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    settings.media_dir.mkdir(parents=True, exist_ok=True)
+    db = await database.get_db()
+    await db.close()
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok", "service": "cutmuck-worker"}
+
+
+@app.get("/settings")
+async def get_settings() -> dict[str, Any]:
+    db = await database.get_db()
+    try:
+        return await database.get_all_settings(db)
+    finally:
+        await db.close()
+
+
+@app.put("/settings")
+async def put_settings(body: SettingsUpdate) -> dict[str, Any]:
+    db = await database.get_db()
+    try:
+        payload = body.model_dump(exclude_none=True)
+        for key, value in payload.items():
+            await database.set_setting(db, key, str(value))
+        return await database.get_all_settings(db)
+    finally:
+        await db.close()
+
+
+@app.get("/channels")
+async def channels_list(refresh: int = 0) -> list[dict[str, Any]]:
+    """List saved channels. refresh=1 re-checks Kick live status for each."""
+    db = await database.get_db()
+    try:
+        channels = await database.list_channels(db)
+        if not refresh:
+            return channels
+
+        async def _refresh_one(ch: dict[str, Any]) -> dict[str, Any]:
+            slug = ch.get("slug")
+            if not slug:
+                return ch
+            try:
+                fresh = await asyncio.to_thread(fetch_channel, slug)
+                return await database.upsert_channel(db, fresh)
+            except KickError:
+                # Kick unreachable — keep cached row but don't invent live
+                return ch
+
+        # Bound concurrency so many channels don't stampede Kick
+        sem = asyncio.Semaphore(4)
+
+        async def _guarded(ch: dict[str, Any]) -> dict[str, Any]:
+            async with sem:
+                return await _refresh_one(ch)
+
+        return list(await asyncio.gather(*[_guarded(ch) for ch in channels]))
+    finally:
+        await db.close()
+
+
+@app.post("/channels/refresh-live")
+async def channels_refresh_live() -> list[dict[str, Any]]:
+    """Force-refresh is_live for all saved channels."""
+    return await channels_list(refresh=1)
+
+
+@app.post("/channels")
+async def channels_create(body: ChannelCreate) -> dict[str, Any]:
+    try:
+        slug = parse_kick_slug(body.input)
+        info = fetch_channel(slug)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except KickError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db = await database.get_db()
+    try:
+        return await database.upsert_channel(db, info)
+    finally:
+        await db.close()
+
+
+@app.get("/channels/{slug}")
+async def channels_get(slug: str) -> dict[str, Any]:
+    db = await database.get_db()
+    try:
+        channel = await database.get_channel(db, slug)
+        if not channel:
+            raise HTTPException(404, "Kanal bulunamadı")
+        try:
+            fresh = fetch_channel(slug)
+            channel = await database.upsert_channel(db, fresh)
+        except KickError:
+            pass
+        return channel
+    finally:
+        await db.close()
+
+
+@app.delete("/channels/{slug}")
+async def channels_delete(slug: str) -> dict[str, bool]:
+    db = await database.get_db()
+    try:
+        ok = await database.delete_channel(db, slug)
+        if not ok:
+            raise HTTPException(404, "Kanal bulunamadı")
+        return {"ok": True}
+    finally:
+        await db.close()
+
+
+@app.get("/channels/{slug}/vods")
+async def channels_vods(slug: str) -> list[dict[str, Any]]:
+    try:
+        return fetch_vods(slug)
+    except KickError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/channels/{slug}/clips")
+async def channels_clips(slug: str) -> list[dict[str, Any]]:
+    try:
+        return fetch_clips(slug)
+    except KickError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/jobs")
+async def jobs_list(limit: int = 40) -> list[JobOut]:
+    db = await database.get_db()
+    try:
+        jobs = await database.list_jobs(db, limit=limit)
+        return [job_urls(j) for j in jobs]
+    finally:
+        await db.close()
+
+
+@app.delete("/jobs/{job_id}")
+async def jobs_delete(job_id: str) -> dict[str, bool]:
+    await stop_live_ring(job_id)
+    db = await database.get_db()
+    try:
+        job = await database.get_job(db, job_id)
+        if not job:
+            raise HTTPException(404, "Job bulunamadı")
+        for key in ("local_path", "cut_path"):
+            p = job.get(key)
+            if p:
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        ok = await database.delete_job(db, job_id)
+        return {"ok": ok}
+    finally:
+        await db.close()
+
+
+@app.post("/jobs/download")
+@app.post("/jobs/open")
+async def jobs_open(body: DownloadRequest) -> JobOut:
+    """Open a VOD/clip for editing via remote Kick HLS (no full download)."""
+    kind = body.kind or "vod"
+    hls_url = None
+    live_playback = None
+    duration = float(body.duration or 0)
+    title = body.title or "Kick VOD"
+    thumbnail = body.thumbnail
+    uuid_val = None
+    source_url = body.vod_url
+    channel_slug = body.channel_slug
+    mode = "remote-hls"
+
+    try:
+        if kind == "clip":
+            clip_id = body.clip_id
+            if not clip_id and body.vod_url and "clip=" in body.vod_url:
+                clip_id = body.vod_url.split("clip=")[-1].split("&")[0]
+            if not clip_id:
+                raise HTTPException(400, "clip_id gerekli")
+            playback = fetch_clip_playback(clip_id)
+            hls_url = playback["hls_url"]
+            duration = playback["duration"] or duration
+            title = body.title or playback["title"] or title
+            thumbnail = thumbnail or playback.get("thumbnail")
+            source_url = playback.get("url") or source_url or f"clip:{clip_id}"
+            channel_slug = channel_slug or playback.get("channel_slug")
+            mode = "clip-hls"
+            uuid_val = clip_id
+        elif kind == "live":
+            if not channel_slug:
+                raise HTTPException(400, "channel_slug gerekli")
+            playback = fetch_live_playback(channel_slug)
+            live_playback = playback
+            hls_url = playback.get("dvr_hls_url") or playback["hls_url"]
+            title = body.title or playback["title"] or f"{channel_slug} canlı"
+            thumbnail = thumbnail or playback.get("thumbnail")
+            source_url = playback.get("url") or f"https://kick.com/{channel_slug}"
+            mode = "live"
+            duration = 0
+        else:
+            if not body.vod_url:
+                raise HTTPException(400, "vod_url gerekli")
+            uuid_val = parse_vod_uuid(body.vod_url)
+            if uuid_val:
+                playback = fetch_vod_playback(uuid_val)
+                # Ongoing Kick session listed as VOD — open as true live edge
+                if playback.get("is_live") and channel_slug:
+                    live_pb = fetch_live_playback(channel_slug)
+                    live_playback = live_pb
+                    hls_url = live_pb.get("dvr_hls_url") or live_pb["hls_url"]
+                    title = body.title or live_pb.get("title") or playback["title"] or title
+                    thumbnail = thumbnail or live_pb.get("thumbnail") or playback.get("thumbnail")
+                    source_url = live_pb.get("url") or source_url or f"https://kick.com/{channel_slug}"
+                    mode = "live"
+                    duration = 0
+                else:
+                    hls_url = playback["hls_url"]
+                    duration = playback["duration"] or duration
+                    title = body.title or playback["title"] or title
+                    thumbnail = thumbnail or playback.get("thumbnail")
+            elif body.vod_url.endswith(".m3u8"):
+                hls_url = body.vod_url
+    except KickError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    if not hls_url:
+        raise HTTPException(400, "Oynatma kaynağı bulunamadı")
+
+    job_id = uuid.uuid4().hex
+    db = await database.get_db()
+    try:
+        job = await database.create_job(
+            db,
+            {
+                "id": job_id,
+                "kind": "live" if mode == "live" else "remote",
+                "status": "ready",
+                "progress": 100,
+                "channel_slug": channel_slug,
+                "source_url": source_url,
+                "title": title,
+                "meta": {
+                    "thumbnail": thumbnail,
+                    "duration": duration,
+                    "hls_url": hls_url,
+                    "live_edge_url": (live_playback or {}).get("live_edge_url") or hls_url,
+                    "dvr_hls_url": (live_playback or {}).get("dvr_hls_url"),
+                    "vod_uuid": uuid_val,
+                    "mode": mode,
+                    "is_live": mode == "live",
+                    "dvr": bool((live_playback or {}).get("dvr")),
+                    "overlays": [],
+                },
+            },
+        )
+    finally:
+        await db.close()
+
+    if mode == "live":
+        # Prefetch 720p preview + best-quality export URL (Kick session DVR)
+        try:
+            meta = dict(job.get("meta") or {})
+            raw_master, _ = await asyncio.to_thread(fetch_hls_bytes, hls_url, 25.0)
+            master_text = raw_master.decode("utf-8", errors="replace")
+            if "#EXT-X-STREAM-INF" in master_text:
+                preview_url = pick_media_playlist(master_text, hls_url, prefer="720")
+                export_url = pick_media_playlist(master_text, hls_url, prefer="best")
+            else:
+                preview_url = hls_url
+                export_url = hls_url
+            # Measure DVR length so the editor timeline shows full history immediately
+            dvr_sec = 0.0
+            try:
+                raw_media, _ = await asyncio.to_thread(fetch_hls_bytes, preview_url, 45.0)
+                dvr_sec = playlist_duration_seconds(
+                    raw_media.decode("utf-8", errors="replace")
+                )
+            except Exception:
+                dvr_sec = 0.0
+            meta.update(
+                {
+                    "preview_hls_url": preview_url,
+                    "export_hls_url": export_url,
+                    "hls_resolved_at": time.time(),
+                    "hls_url": hls_url,
+                    "dvr_hls_url": (live_playback or {}).get("dvr_hls_url") or hls_url,
+                    "duration": dvr_sec,
+                    "dvr_seconds": dvr_sec,
+                }
+            )
+            db2 = await database.get_db()
+            try:
+                updated = await database.update_job(db2, job_id, meta=meta)
+                if updated:
+                    job = updated
+            finally:
+                await db2.close()
+        except Exception:
+            pass
+        if source_url:
+            await start_live_ring(job_id, source_url)
+
+    return job_urls(job)
+
+
+@app.post("/jobs/open-live")
+async def jobs_open_live(body: LiveOpenRequest) -> JobOut:
+    return await jobs_open(
+        DownloadRequest(
+            kind="live",
+            channel_slug=body.channel_slug,
+            title=body.title,
+            vod_url="",
+        )
+    )
+
+
+@app.get("/jobs/{job_id}")
+async def jobs_get(job_id: str) -> JobOut:
+    db = await database.get_db()
+    try:
+        job = await database.get_job(db, job_id)
+        if not job:
+            raise HTTPException(404, "Job bulunamadı")
+        # Background task died (reload/crash) but DB still says uploading
+        if job.get("status") in {"queued", "exporting", "uploading"}:
+            task = _youtube_tasks.get(job_id)
+            if task is None or task.done():
+                job = (
+                    await database.update_job(
+                        db,
+                        job_id,
+                        status="error",
+                        error="Yükleme kesildi veya takıldı. Tekrar YouTube'a yükle butonuna basın.",
+                    )
+                    or job
+                )
+        return job_urls(job)
+    finally:
+        await db.close()
+
+
+@app.get("/jobs/{job_id}/stream.m3u8")
+async def jobs_stream_master(job_id: str) -> Response:
+    """Serve a preview playlist (VOD seekable, or live sliding window)."""
+    db = await database.get_db()
+    try:
+        job = await database.get_job(db, job_id)
+        if not job:
+            raise HTTPException(404, "Job bulunamadı")
+        meta = job.get("meta") or {}
+        hls_url = meta.get("dvr_hls_url") or meta.get("hls_url") or meta.get("live_edge_url")
+        if not hls_url:
+            raise HTTPException(400, "Bu job için HLS yok")
+
+        is_live = (
+            meta.get("mode") == "live"
+            or job.get("kind") == "live"
+            or bool(meta.get("is_live"))
+        )
+
+        # Live: refresh Kick URL occasionally (not every playlist poll)
+        now = time.time()
+        resolved_at = float(meta.get("hls_resolved_at") or 0)
+        if is_live and job.get("channel_slug") and (now - resolved_at > 600 or not hls_url):
+            try:
+                live_pb = await asyncio.to_thread(
+                    fetch_live_playback, job["channel_slug"]
+                )
+                new_url = live_pb.get("dvr_hls_url") or live_pb.get("hls_url") or live_pb.get("live_edge_url")
+                if new_url:
+                    changed = new_url != hls_url
+                    hls_url = new_url
+                    meta = {
+                        **meta,
+                        "hls_url": hls_url,
+                        "live_edge_url": live_pb.get("live_edge_url") or hls_url,
+                        "dvr_hls_url": live_pb.get("dvr_hls_url"),
+                        "hls_resolved_at": now,
+                        "mode": "live",
+                        "is_live": True,
+                        "dvr": bool(live_pb.get("dvr")),
+                    }
+                    if changed:
+                        meta["preview_hls_url"] = None
+                    await database.update_job(db, job_id, meta=meta)
+            except KickError:
+                pass
+
+        preview_url = meta.get("preview_hls_url")
+        try:
+            if not preview_url:
+                raw_master, _ = await asyncio.to_thread(fetch_hls_bytes, hls_url, 25.0 if is_live else 20.0)
+                master_text = raw_master.decode("utf-8", errors="replace")
+                if "#EXT-X-STREAM-INF" in master_text:
+                    dur = float(meta.get("duration") or 0)
+                    prefer = "720" if (is_live or dur < 3 * 3600) else "480"
+                    preview_url = pick_media_playlist(master_text, hls_url, prefer=prefer)
+                    if is_live:
+                        meta["export_hls_url"] = pick_media_playlist(
+                            master_text, hls_url, prefer="best"
+                        )
+                else:
+                    preview_url = hls_url
+                meta = {**meta, "preview_hls_url": preview_url}
+                await database.update_job(db, job_id, meta=meta)
+
+            # Live DVR playlists can be large (hours of EXTINF) — allow more time
+            raw, _ = await asyncio.to_thread(
+                fetch_hls_bytes, preview_url, 45.0 if is_live else 20.0
+            )
+        except KickError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+        text = raw.decode("utf-8", errors="replace")
+        if is_live:
+            dvr_sec = playlist_duration_seconds(text)
+            prev = float(meta.get("duration") or meta.get("dvr_seconds") or 0)
+            if dvr_sec > prev + 0.5:
+                meta = {**meta, "duration": dvr_sec, "dvr_seconds": dvr_sec}
+                await database.update_job(db, job_id, meta=meta)
+        rewritten = _rewrite_playlist(
+            text, preview_url, as_vod=not is_live, live=is_live
+        )
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        }
+        if is_live:
+            dvr_sec = float(meta.get("dvr_seconds") or meta.get("duration") or 0)
+            if dvr_sec > 0:
+                headers["X-DVR-Seconds"] = f"{dvr_sec:.3f}"
+        return Response(
+            content=rewritten,
+            media_type="application/vnd.apple.mpegurl",
+            headers=headers,
+        )
+    finally:
+        await db.close()
+
+
+# Shared HTTP client for HLS segment proxy
+_hls_client: httpx.AsyncClient | None = None
+# Cap concurrent Kick fetches without fail-fast 503 (queue instead).
+_hls_sem = asyncio.Semaphore(20)
+
+
+def get_hls_client() -> httpx.AsyncClient:
+    global _hls_client
+    if _hls_client is None or _hls_client.is_closed:
+        _hls_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(45.0, connect=10.0),
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=40, max_keepalive_connections=20),
+            http2=False,
+        )
+    return _hls_client
+
+
+@app.get("/hls/seg")
+async def hls_segment(u: str, live: int = 0) -> Response:
+    """Proxy Kick HLS assets. Buffer body so semaphore never leaks on cancel."""
+    is_live = bool(live)
+    try:
+        target = _unb64url(u)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, "Geçersiz segment") from exc
+    parsed = urlparse(target)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(400, "Geçersiz URL")
+
+    headers = {
+        "Referer": "https://kick.com/",
+        "Origin": "https://kick.com",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+    }
+
+    await _hls_sem.acquire()
+    try:
+        if target.endswith(".m3u8"):
+            try:
+                raw, _content_type = await asyncio.to_thread(fetch_hls_bytes, target)
+            except KickError as exc:
+                raise HTTPException(502, str(exc)) from exc
+            text = raw.decode("utf-8", errors="replace")
+            body = _rewrite_playlist(
+                text, target, as_vod=not is_live, live=is_live
+            ).encode("utf-8")
+            return Response(
+                content=body,
+                media_type="application/vnd.apple.mpegurl",
+                headers={"Cache-Control": "no-cache"},
+            )
+
+        media_type = "video/MP2T"
+        if target.endswith(".aac"):
+            media_type = "audio/aac"
+        elif target.endswith(".m4s"):
+            media_type = "video/iso.segment"
+        elif target.endswith(".mp4"):
+            media_type = "video/mp4"
+
+        client = get_hls_client()
+        try:
+            resp = await client.get(target, headers=headers)
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"Segment alınamadı: {exc}") from exc
+        if resp.status_code >= 400:
+            raise HTTPException(resp.status_code, "Upstream segment hatası")
+
+        return Response(
+            content=resp.content,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "public, max-age=3600" if not is_live else "no-cache",
+                "Accept-Ranges": "bytes",
+            },
+        )
+    finally:
+        _hls_sem.release()
+
+
+async def _ensure_segment_file(
+    db: Any,
+    job: dict[str, Any],
+    start_sec: float,
+    end_sec: float,
+    overlays: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    job_id = job["id"]
+    meta = job.get("meta") or {}
+    dest = settings.media_dir / f"{job_id}_cut.mp4"
+    ov = overlays if overlays is not None else list(meta.get("overlays") or [])
+    # Reuse existing cut if same range + overlays
+    if (
+        job.get("cut_path")
+        and Path(job["cut_path"]).exists()
+        and abs(float(meta.get("start_sec", -1)) - start_sec) < 0.05
+        and abs(float(meta.get("end_sec", -1)) - end_sec) < 0.05
+        and meta.get("overlays_applied") == ov
+    ):
+        return job
+
+    await database.update_job(db, job_id, status="cutting", progress=15, error=None)
+    page_url = job.get("source_url") or ""
+    hls_url = meta.get("export_hls_url") or meta.get("dvr_hls_url") or meta.get("hls_url")
+    local = job.get("local_path")
+    mode = meta.get("mode")
+
+    # Live: prefer session/DVR HLS cut; ring file is fallback
+    if mode == "live":
+        window = ring_window_path(job_id)
+        if hls_url:
+            local = None
+        elif window.exists():
+            local = str(window)
+            try:
+                ring_dur = probe_duration(window)
+                meta["duration"] = ring_dur
+            except FFmpegError:
+                pass
+
+    def _work() -> tuple[Path, str]:
+        raw_dest = settings.media_dir / f"{job_id}_cut_raw.mp4"
+        if local and Path(local).exists():
+            path = cut_media(Path(local), raw_dest if ov else dest, start_sec, end_sec)
+            tool = "local-cut"
+        else:
+            path, tool = download_segment(
+                page_url=page_url,
+                hls_url=hls_url,
+                output=raw_dest if ov else dest,
+                start_sec=start_sec,
+                end_sec=end_sec,
+                quality="best",
+            )
+        if ov:
+            path = apply_overlays(
+                path, dest, ov, clip_duration=max(0.1, end_sec - start_sec)
+            )
+            tool = f"{tool}+effects"
+            if raw_dest.exists() and raw_dest.resolve() != dest.resolve():
+                try:
+                    raw_dest.unlink()
+                except OSError:
+                    pass
+        return path, tool
+
+    try:
+        path, tool = await asyncio.to_thread(_work)
+    except (DownloadError, FFmpegError) as exc:
+        await database.update_job(db, job_id, status="error", error=str(exc))
+        raise HTTPException(400, str(exc)) from exc
+
+    meta.update(
+        {
+            "start_sec": start_sec,
+            "end_sec": end_sec,
+            "export_tool": tool,
+            "overlays": ov,
+            "overlays_applied": ov,
+        }
+    )
+    updated = await database.update_job(
+        db,
+        job_id,
+        status="cut",
+        progress=100,
+        cut_path=str(path),
+        meta=meta,
+    )
+    return updated or job
+
+
+@app.post("/jobs/{job_id}/cut")
+async def jobs_cut(job_id: str, body: CutRequest) -> JobOut:
+    db = await database.get_db()
+    try:
+        job = await database.get_job(db, job_id)
+        if not job:
+            raise HTTPException(404, "Job bulunamadı")
+        updated = await _ensure_segment_file(db, job, body.start_sec, body.end_sec)
+        return job_urls(updated)
+    finally:
+        await db.close()
+
+
+@app.get("/auth/youtube/start")
+async def youtube_start(request: Request) -> dict[str, str]:
+    db = await database.get_db()
+    try:
+        client_id = await database.get_setting(db, "youtube_client_id")
+        client_secret = await database.get_setting(db, "youtube_client_secret")
+        if not client_id or not client_secret:
+            raise HTTPException(400, "YouTube Client ID/Secret ayarlarda gerekli")
+        redirect_uri = f"{settings.web_origin.rstrip('/')}/api/auth/youtube/callback"
+        state = new_oauth_state()
+        await database.set_setting(db, "youtube_oauth_state", state)
+        auth_url = build_auth_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+        )
+        return {"auth_url": auth_url, "redirect_uri": redirect_uri}
+    finally:
+        await db.close()
+
+
+@app.get("/auth/youtube/callback")
+async def youtube_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    if error:
+        return RedirectResponse(
+            f"{settings.web_origin}/?youtube=error&reason={quote(error)}"
+        )
+    if not code:
+        return RedirectResponse(f"{settings.web_origin}/?youtube=error&reason=missing_code")
+
+    db = await database.get_db()
+    try:
+        saved_state = await database.get_setting(db, "youtube_oauth_state")
+        if not saved_state or not state or saved_state != state:
+            return RedirectResponse(f"{settings.web_origin}/?youtube=error&reason=state_mismatch")
+
+        client_id = await database.get_setting(db, "youtube_client_id")
+        client_secret = await database.get_setting(db, "youtube_client_secret")
+        if not client_id or not client_secret:
+            return RedirectResponse(f"{settings.web_origin}/?youtube=error&reason=missing_credentials")
+
+        redirect_uri = f"{settings.web_origin.rstrip('/')}/api/auth/youtube/callback"
+        try:
+            tokens = await asyncio.to_thread(
+                exchange_code_for_tokens,
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+                code=code,
+            )
+        except YoutubeError as exc:
+            return RedirectResponse(
+                f"{settings.web_origin}/?youtube=error&reason={quote(str(exc)[:200])}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            return RedirectResponse(
+                f"{settings.web_origin}/?youtube=error&reason={quote(str(exc)[:200])}"
+            )
+
+        await database.set_setting(db, "youtube_refresh_token", tokens["refresh_token"])
+        await database.set_setting(db, "youtube_oauth_state", "")
+        return RedirectResponse(f"{settings.web_origin}/?youtube=connected")
+    finally:
+        await db.close()
+
+
+# Prevent stacking multiple YouTube exports for the same job
+_youtube_tasks: dict[str, asyncio.Task[None]] = {}
+
+
+def _sync_upload_progress(job_id: str, frac: float) -> None:
+    """Best-effort progress from the upload thread (aiosqlite not usable there)."""
+    import sqlite3
+
+    progress = round(55 + max(0.0, min(1.0, frac)) * 40, 1)
+    try:
+        conn = sqlite3.connect(str(settings.db_path), timeout=5)
+        try:
+            conn.execute(
+                "UPDATE jobs SET progress = ?, status = 'uploading' WHERE id = ?",
+                (progress, job_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _run_youtube_pipeline(
+    job_id: str,
+    *,
+    title: str,
+    description: str,
+    privacy: str,
+    start_sec: float,
+    end_sec: float,
+    overlays: list[dict[str, Any]] | None = None,
+    thumbnail_data_url: str | None = None,
+) -> None:
+    db = await database.get_db()
+    try:
+        job = await database.get_job(db, job_id)
+        if not job:
+            return
+
+        await database.update_job(db, job_id, status="exporting", progress=10, error=None)
+        try:
+            job = await _ensure_segment_file(db, job, start_sec, end_sec, overlays=overlays)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            await database.update_job(db, job_id, status="error", error=detail)
+            return
+
+        upload_path = job.get("cut_path")
+        if not upload_path or not Path(upload_path).exists():
+            await database.update_job(
+                db, job_id, status="error", error="Yüklenecek kesit dosyası yok"
+            )
+            return
+
+        client_id = await database.get_setting(db, "youtube_client_id")
+        client_secret = await database.get_setting(db, "youtube_client_secret")
+        refresh = await database.get_setting(db, "youtube_refresh_token")
+        if not client_id or not client_secret or not refresh:
+            await database.update_job(
+                db,
+                job_id,
+                status="error",
+                error="YouTube OAuth tamamlanmamış — Ayarlar'dan bağlayın",
+            )
+            return
+
+        await database.update_job(db, job_id, status="uploading", progress=55, error=None)
+        path = Path(upload_path)
+        size = path.stat().st_size
+        # Assume ~512 KiB/s worst case + 20 min slack (multi‑GB uploads)
+        upload_timeout = max(1800.0, size / (512 * 1024) + 1200)
+        # Cap at 12h wall clock for extreme 30–40GB cases
+        upload_timeout = min(upload_timeout, 12 * 3600)
+
+        def _upload() -> dict[str, Any]:
+            return upload_video(
+                client_id=client_id,
+                client_secret=client_secret,
+                refresh_token=refresh,
+                file_path=path,
+                title=title,
+                description=description,
+                privacy=privacy,
+                on_progress=lambda frac: _sync_upload_progress(job_id, frac),
+            )
+
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(_upload), timeout=upload_timeout
+            )
+        except TimeoutError:
+            await database.update_job(
+                db,
+                job_id,
+                status="error",
+                error="YouTube yükleme zaman aşımı — tekrar deneyin",
+            )
+            return
+        except YoutubeError as exc:
+            await database.update_job(db, job_id, status="error", error=str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            await database.update_job(
+                db, job_id, status="error", error=f"YouTube yükleme hatası: {exc}"
+            )
+            return
+
+        video_id = result.get("id")
+        if thumbnail_data_url and video_id and thumbnail_data_url.startswith("data:image"):
+            try:
+                # Brief pause after long upload — Windows TLS sessions can be sticky
+                await asyncio.sleep(1.0)
+                header, b64 = thumbnail_data_url.split(",", 1)
+                raw = base64.b64decode(b64)
+                thumb_path = settings.media_dir / f"{job_id}_thumb.jpg"
+                thumb_path.write_bytes(raw)
+                await asyncio.to_thread(
+                    set_thumbnail,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    refresh_token=refresh,
+                    video_id=video_id,
+                    image_path=thumb_path,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Non-fatal: video uploaded, thumb failed
+                meta_err = job.get("meta") or {}
+                meta_err["thumb_error"] = str(exc)[:200]
+                await database.update_job(db, job_id, meta=meta_err)
+
+        meta = job.get("meta") or {}
+        meta["youtube"] = {"id": result.get("id"), "url": result.get("url")}
+        await database.update_job(
+            db,
+            job_id,
+            status="done",
+            progress=100,
+            title=title,
+            meta=meta,
+            error=None,
+        )
+    finally:
+        await db.close()
+        _youtube_tasks.pop(job_id, None)
+
+
+@app.put("/jobs/{job_id}/timeline")
+async def jobs_timeline(job_id: str, body: TimelineUpdate) -> JobOut:
+    db = await database.get_db()
+    try:
+        job = await database.get_job(db, job_id)
+        if not job:
+            raise HTTPException(404, "Job bulunamadı")
+        meta = job.get("meta") or {}
+        meta["overlays"] = [o.model_dump() for o in body.overlays]
+        # Force re-export next time
+        meta.pop("overlays_applied", None)
+        updated = await database.update_job(db, job_id, meta=meta)
+        return job_urls(updated or job)
+    finally:
+        await db.close()
+
+
+@app.get("/jobs/{job_id}/ring")
+async def jobs_ring(job_id: str) -> dict[str, Any]:
+    db = await database.get_db()
+    try:
+        job = await database.get_job(db, job_id)
+        if not job:
+            raise HTTPException(404, "Job bulunamadı")
+        status = ring_status(job_id)
+        if status.get("window_path"):
+            await database.update_job(
+                db,
+                job_id,
+                local_path=status["window_path"],
+                meta={
+                    **(job.get("meta") or {}),
+                    "duration": status.get("duration") or 0,
+                    "ring": status,
+                },
+            )
+        return status
+    finally:
+        await db.close()
+
+
+@app.post("/jobs/{job_id}/youtube")
+async def jobs_youtube(job_id: str, body: YoutubeUploadRequest) -> JobOut:
+    """Start export+upload in background; client should poll GET /jobs/{id}."""
+    db = await database.get_db()
+    try:
+        job = await database.get_job(db, job_id)
+        if not job:
+            raise HTTPException(404, "Job bulunamadı")
+
+        existing = _youtube_tasks.get(job_id)
+        if existing and not existing.done():
+            existing.cancel()
+            try:
+                await existing
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            _youtube_tasks.pop(job_id, None)
+
+        start = float(
+            body.start_sec
+            if body.start_sec is not None
+            else (job.get("meta") or {}).get("start_sec")
+            or 0
+        )
+        end = body.end_sec
+        if end is None:
+            end = (job.get("meta") or {}).get("end_sec")
+        if end is None:
+            raise HTTPException(400, "Kesit aralığı (start/end) gerekli — tam VOD indirme kapalı")
+        end = float(end)
+        if end - start <= 0:
+            raise HTTPException(400, "Geçersiz kesit aralığı")
+        if end - start > 8 * 60 * 60:
+            raise HTTPException(400, "Kesit en fazla 8 saat olabilir (disk/süre koruması)")
+
+        client_id = await database.get_setting(db, "youtube_client_id")
+        client_secret = await database.get_setting(db, "youtube_client_secret")
+        refresh = await database.get_setting(db, "youtube_refresh_token")
+        if not client_id or not client_secret or not refresh:
+            raise HTTPException(400, "YouTube OAuth tamamlanmamış — Ayarlar'dan bağlayın")
+
+        overlays = (
+            [o.model_dump() for o in body.overlays]
+            if body.overlays is not None
+            else list((job.get("meta") or {}).get("overlays") or [])
+        )
+
+        updated = await database.update_job(
+            db, job_id, status="queued", progress=5, error=None, title=body.title
+        )
+        task = asyncio.create_task(
+            _run_youtube_pipeline(
+                job_id,
+                title=body.title,
+                description=body.description,
+                privacy=body.privacy,
+                start_sec=start,
+                end_sec=end,
+                overlays=overlays,
+                thumbnail_data_url=body.thumbnail_data_url,
+            )
+        )
+        _youtube_tasks[job_id] = task
+        return job_urls(updated or job)
+    finally:
+        await db.close()
+
+
+@app.get("/file/{job_id}")
+async def file_for_job(job_id: str, kind: str = "source") -> FileResponse:
+    db = await database.get_db()
+    try:
+        job = await database.get_job(db, job_id)
+        if not job:
+            raise HTTPException(404, "Job bulunamadı")
+        path_str = job.get("cut_path") if kind == "cut" else job.get("local_path") or job.get("cut_path")
+        if not path_str:
+            raise HTTPException(404, "Dosya yok")
+        path = Path(path_str)
+        if not path.exists():
+            raise HTTPException(404, "Dosya diskte yok")
+        return FileResponse(path, media_type="video/mp4", filename=path.name)
+    finally:
+        await db.close()

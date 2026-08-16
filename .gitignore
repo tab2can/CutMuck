@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+apps/web/node_modules/
+apps/web/.next/
+apps/worker/.venv/
+**/__pycache__/
+*.pyc
+.Python
+
+# Data & secrets
+data/**
+!data/.gitkeep
+!data/media/
+!data/media/.gitkeep
+*.db
+.env
+.env.local
+apps/web/.env*.local
+apps/worker/.env
+
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local override
+docker-compose.override.yml

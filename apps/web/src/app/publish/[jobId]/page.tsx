@@ -1,0 +1,278 @@
+"use client";
+
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import {
+  api,
+  formatBytes,
+  formatDuration,
+  jobStatusLabel,
+  mediaSrc,
+  type Job,
+} from "@/lib/api";
+import { ClipPreviewPlayer } from "@/components/ClipPreviewPlayer";
+import { useNativeContextBlock } from "@/components/ContextMenu";
+import { useTheme } from "@/components/ThemeProvider";
+import { useToast } from "@/components/Toast";
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function waitForYoutube(jobId: string, onTick: (job: Job) => void): Promise<Job> {
+  for (;;) {
+    const job = await api<Job>(`/jobs/${jobId}`);
+    onTick(job);
+    if (job.status === "done") return job;
+    if (job.status === "error") {
+      throw new Error(job.error || "Yükleme başarısız");
+    }
+    await sleep(1500);
+  }
+}
+
+function PublishInner() {
+  useNativeContextBlock(true);
+  const params = useParams<{ jobId: string }>();
+  const search = useSearchParams();
+  const router = useRouter();
+  const { settings } = useTheme();
+  const { push } = useToast();
+  const jobId = params.jobId;
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  const startSec = Number(search.get("start") || 0);
+  const endSec = Number(search.get("end") || 0);
+
+  const [job, setJob] = useState<Job | null>(null);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [privacy, setPrivacy] = useState<"public" | "unlisted" | "private">("unlisted");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [ytUrl, setYtUrl] = useState<string | null>(null);
+  const [thumbDataUrl, setThumbDataUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    void api<Job>(`/jobs/${jobId}`).then((data) => {
+      setJob(data);
+      setTitle(data.title || "CutMuck export");
+      const def = (settings?.youtube_privacy_default as typeof privacy) || "unlisted";
+      setPrivacy(def);
+      const t = (data.meta?.thumbnail as string) || null;
+      if (t) setThumbDataUrl(t);
+    });
+  }, [jobId, settings?.youtube_privacy_default]);
+
+  useEffect(() => {
+    if (!busy) return;
+    const el = videoRef.current;
+    if (el) {
+      el.pause();
+      el.removeAttribute("src");
+      el.load();
+    }
+  }, [busy]);
+
+  const preview = useMemo(() => {
+    if (busy) return null;
+    if (job?.cut_url) return mediaSrc(job.cut_url);
+    if (job?.stream_url) return mediaSrc(job.stream_url);
+    return mediaSrc(job?.media_url);
+  }, [job, busy]);
+
+  const clipLen = endSec > startSec ? endSec - startSec : 0;
+  const hasCut = Boolean(job?.cut_url);
+
+  function captureFrame() {
+    const v = videoRef.current;
+    if (!v || v.readyState < 2) {
+      push("Önce videoyu oynatın / yükleyin", "error");
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = v.videoWidth || 1280;
+    canvas.height = v.videoHeight || 720;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+    setThumbDataUrl(canvas.toDataURL("image/jpeg", 0.92));
+    push("Kare yakalandı", "ok");
+  }
+
+  async function upload() {
+    if (!(endSec > startSec)) {
+      setMessage("Geçerli bir kesit aralığı yok — editöre dönüp In/Out ayarlayın");
+      return;
+    }
+    setBusy(true);
+    setMessage(
+      hasCut
+        ? "Mevcut kesit kullanılıyor — YouTube’a yükleniyor…"
+        : "Kesit indiriliyor… (önizleme kapalı)"
+    );
+    setYtUrl(null);
+    try {
+      await api<Job>(`/jobs/${jobId}/youtube`, {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          description,
+          privacy,
+          start_sec: startSec,
+          end_sec: endSec,
+          thumbnail_data_url: thumbDataUrl?.startsWith("data:") ? thumbDataUrl : null,
+        }),
+      });
+      const result = await waitForYoutube(jobId, (j) => {
+        setJob(j);
+        const pct = Math.round(j.progress || 0);
+        const size = j.cut_size_bytes ? ` · ${formatBytes(j.cut_size_bytes)}` : "";
+        setMessage(`${jobStatusLabel(j.status)} (%${pct})${size}`);
+      });
+      setJob(result);
+      const url = (result.meta?.youtube as { url?: string } | undefined)?.url || null;
+      setYtUrl(url);
+      setMessage(url ? "YouTube’a yüklendi" : "Yükleme tamam");
+      push("YouTube yüklemesi tamam", "ok");
+      if (result.meta?.thumb_error) {
+        const thumbMsg = String(result.meta.thumb_error);
+        push(
+          thumbMsg,
+          thumbMsg.includes("doğrulayın") || thumbMsg.includes("Studio") ? "info" : "error"
+        );
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Yükleme başarısız";
+      setMessage(msg);
+      push(msg, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="publish-shell">
+      <div className="publish-main">
+        <div className="titlebar-left" style={{ display: "flex", gap: 8 }}>
+          <button type="button" className="btn ghost" onClick={() => router.push(`/editor/${jobId}`)}>
+            ← Editör
+          </button>
+          <button type="button" className="btn ghost" onClick={() => router.push("/")}>
+            Ana menü
+          </button>
+        </div>
+        <div className="publish-preview">
+          {preview && endSec > startSec ? (
+            <ClipPreviewPlayer
+              src={preview}
+              isCutFile={Boolean(job?.cut_url)}
+              startSec={startSec}
+              endSec={endSec}
+              videoRef={videoRef}
+              disabled={busy}
+            />
+          ) : (
+            <p className="muted" style={{ padding: 24 }}>
+              {busy
+                ? "Yükleme sırasında önizleme kapalı"
+                : endSec > startSec
+                  ? "Önizleme yok"
+                  : "Geçerli kesit yok — editörde In/Out ayarlayın"}
+            </p>
+          )}
+        </div>
+        <section className="settings-section publish-meta">
+          <h3>YouTube ince ayarlar</h3>
+          <p className="muted">
+            Kesit: {formatDuration(startSec)} → {formatDuration(endSec)} ({formatDuration(clipLen)})
+            {hasCut ? ` · hazır dosya ${formatBytes(job?.cut_size_bytes)}` : ""}
+          </p>
+          {busy && job ? (
+            <div className="upload-progress">
+              <div className="upload-bar">
+                <div style={{ width: `${Math.min(100, job.progress || 0)}%` }} />
+              </div>
+              <p className="muted">{message}</p>
+            </div>
+          ) : null}
+        </section>
+      </div>
+
+      <aside className="publish-side">
+        <h2>YouTube yayını</h2>
+        <div className="thumb-placeholder">
+          {thumbDataUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={thumbDataUrl} alt="" />
+          ) : (
+            <span>Kapak yok</span>
+          )}
+        </div>
+        <div className="effect-row">
+          <button type="button" className="btn" disabled={busy} onClick={captureFrame}>
+            Kareyi kapak yap
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={busy || !(job?.meta?.thumbnail as string)}
+            onClick={() => setThumbDataUrl((job?.meta?.thumbnail as string) || null)}
+          >
+            Kick thumb
+          </button>
+        </div>
+        <label className="field">
+          <span>Başlık</span>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100} />
+        </label>
+        <label className="field">
+          <span>Açıklama</span>
+          <textarea
+            rows={6}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Video açıklaması"
+          />
+        </label>
+        <label className="field">
+          <span>Gizlilik</span>
+          <select
+            value={privacy}
+            onChange={(e) => setPrivacy(e.target.value as typeof privacy)}
+          >
+            <option value="unlisted">Unlisted</option>
+            <option value="public">Public</option>
+            <option value="private">Private</option>
+          </select>
+        </label>
+        {message ? (
+          <p className={ytUrl ? "muted" : "form-message"}>
+            {message}{" "}
+            {ytUrl ? (
+              <a href={ytUrl} target="_blank" rel="noreferrer">
+                YouTube’da aç
+              </a>
+            ) : null}
+          </p>
+        ) : null}
+        <button
+          type="button"
+          className="btn primary block"
+          disabled={busy || !title.trim() || !(endSec > startSec)}
+          onClick={() => void upload()}
+        >
+          {busy ? "Yükleniyor…" : hasCut ? "YouTube’a yükle (retry)" : "Kesit indir + yükle"}
+        </button>
+      </aside>
+    </div>
+  );
+}
+
+export default function PublishPage() {
+  return (
+    <Suspense fallback={<p className="muted pad">Yükleniyor…</p>}>
+      <PublishInner />
+    </Suspense>
+  );
+}

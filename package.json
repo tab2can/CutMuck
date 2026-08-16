@@ -1,0 +1,9 @@
+{
+  "name": "cutmuck",
+  "private": true,
+  "scripts": {
+    "dev:web": "npm --prefix apps/web run dev",
+    "dev:worker": "apps/worker/.venv/Scripts/python.exe apps/worker/run.py",
+    "build:web": "npm --prefix apps/web run build"
+  }
+}

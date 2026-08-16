@@ -1,0 +1,52 @@
+# CutMuck production stack — Caddy (HTTPS) + Next.js + FastAPI worker
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${CUTMUCK_DOMAIN:?Set CUTMUCK_DOMAIN}
+      ACME_EMAIL: ${CUTMUCK_EMAIL:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      WORKER_URL: http://worker:8787
+      NODE_ENV: production
+    depends_on:
+      - worker
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    expose:
+      - "8787"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8787"
+      CUTMUCK_DATA: /data
+      PUBLIC_BASE_URL: https://${CUTMUCK_DOMAIN}
+      WEB_ORIGIN: https://${CUTMUCK_DOMAIN}
+    volumes:
+      - cutmuck_data:/data
+
+volumes:
+  cutmuck_data:
+  caddy_data:
+  caddy_config:
