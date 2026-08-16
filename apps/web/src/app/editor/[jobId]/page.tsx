@@ -56,6 +56,7 @@ export default function EditorPage() {
   const [volume, setVolume] = useState(1);
   const [rangeTouched, setRangeTouched] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [viewStart, setViewStart] = useState(0);
   const [loopSel, setLoopSel] = useState(false);
   const [overlays, setOverlays] = useState<TimelineOverlay[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -854,7 +855,9 @@ export default function EditorPage() {
                 inPoint={inPoint}
                 outPoint={outPoint}
                 zoom={zoom}
+                viewStart={viewStart}
                 onZoom={setZoom}
+                onViewStart={setViewStart}
                 onSeek={seekTo}
                 onInChange={(t) => {
                   setRangeTouched(true);
@@ -871,6 +874,12 @@ export default function EditorPage() {
               overlays={overlays}
               duration={timelineDur}
               current={current}
+              inPoint={inPoint}
+              outPoint={outPoint}
+              zoom={zoom}
+              viewStart={viewStart}
+              onZoom={setZoom}
+              onViewStart={setViewStart}
               selectedId={selectedId}
               onSelect={setSelectedId}
               onChange={(id, patch) => patchOverlay(id, patch, { persist: false })}

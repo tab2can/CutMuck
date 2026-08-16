@@ -1274,15 +1274,7 @@ a {
 }
 
 .fx-playhead-line {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 80px;
-  width: 2px;
-  margin-left: calc((100% - 116px) * var(--ph, 0));
-  background: var(--accent);
-  z-index: 2;
-  pointer-events: none;
+  display: none;
 }
 
 .fx-track {
@@ -1295,6 +1287,95 @@ a {
   cursor: pointer;
 }
 
+.fx-track-lane {
+  position: relative;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--bg-soft);
+  overflow: visible;
+}
+
+.fx-cut-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  border-left: 1px solid color-mix(in oklab, var(--accent) 70%, transparent);
+  border-right: 1px solid color-mix(in oklab, var(--accent-2) 70%, transparent);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.fx-cut-mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.fx-cut-mark.in {
+  background: var(--accent);
+}
+
+.fx-cut-mark.out {
+  background: var(--accent-2);
+}
+
+.fx-lane-playhead {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+  opacity: 0.85;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.fx-hover-tip,
+.timeline-hover-tip {
+  position: absolute;
+  top: -1.45rem;
+  transform: translateX(-50%);
+  z-index: 8;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  font-size: 0.7rem;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--shadow);
+}
+
+.timeline-row {
+  display: grid;
+  gap: 8px;
+  align-items: center;
+}
+
+.timeline-row-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.timeline-row-spacer {
+  width: 28px;
+  height: 1px;
+}
+
+.timeline-track.pro {
+  height: 40px;
+  position: relative;
+  overflow: visible;
+  border-radius: 8px;
+  background: var(--bg-soft);
+}
+
 .fx-track.selected {
   background: color-mix(in oklab, var(--accent) 12%, transparent);
 }
@@ -1302,14 +1383,6 @@ a {
 .fx-track-label {
   font-size: 0.75rem;
   color: var(--muted);
-}
-
-.fx-track-lane {
-  position: relative;
-  height: 28px;
-  border-radius: 8px;
-  background: var(--bg-soft);
-  overflow: hidden;
 }
 
 .fx-clip {
@@ -1321,7 +1394,8 @@ a {
   display: flex;
   align-items: center;
   padding: 0 6px;
-  overflow: hidden;
+  overflow: visible;
+  z-index: 2;
 }
 
 .fx-clip-text {
@@ -1981,6 +2055,9 @@ a {
 .timeline-track.pro {
   height: 40px;
   position: relative;
+  overflow: visible;
+  border-radius: 8px;
+  background: var(--bg-soft);
 }
 
 .timeline-handle {
