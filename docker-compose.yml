@@ -15,7 +15,10 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - web
+      web:
+        condition: service_started
+      worker:
+        condition: service_healthy
 
   web:
     build:
@@ -27,8 +30,12 @@ services:
     environment:
       WORKER_URL: http://worker:8787
       NODE_ENV: production
+      NODE_OPTIONS: --dns-result-order=ipv4first
+      NO_PROXY: worker,localhost,127.0.0.1
+      no_proxy: worker,localhost,127.0.0.1
     depends_on:
-      - worker
+      worker:
+        condition: service_healthy
 
   worker:
     build:
@@ -45,6 +52,12 @@ services:
       WEB_ORIGIN: https://${CUTMUCK_DOMAIN}
     volumes:
       - cutmuck_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
 
 volumes:
   cutmuck_data:

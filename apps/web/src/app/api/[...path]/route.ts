@@ -48,8 +48,12 @@ async function proxy(req: NextRequest, path: string[]) {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Worker unreachable";
+    const cause =
+      err instanceof Error && err.cause instanceof Error ? `: ${err.cause.message}` : "";
     return NextResponse.json(
-      { detail: `Worker bağlantısı başarısız (${WORKER_URL}): ${message}` },
+      {
+        detail: `Worker bağlantısı başarısız (${WORKER_URL}): ${message}${cause}`,
+      },
       { status: 502 }
     );
   }

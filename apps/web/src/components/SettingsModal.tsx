@@ -16,7 +16,12 @@ const THEMES: { id: ThemeId; label: string }[] = [
   { id: "light", label: "Açık" },
 ];
 
-const REDIRECT_URI = "http://localhost:3000/api/auth/youtube/callback";
+function redirectUri() {
+  if (typeof window !== "undefined") {
+    return `${window.location.origin}/api/auth/youtube/callback`;
+  }
+  return "http://localhost:3000/api/auth/youtube/callback";
+}
 
 export function SettingsModal({ open, onClose }: Props) {
   const { theme, setTheme, settings, refreshSettings, updateSettings } = useTheme();
@@ -173,11 +178,11 @@ function SettingsBody({
             Redirect URI (Google Cloud → Authorized redirect URIs):
           </p>
           <div className="uri-box">
-            <code>{REDIRECT_URI}</code>
+            <code>{redirectUri()}</code>
             <button
               type="button"
               className="btn ghost"
-              onClick={() => void navigator.clipboard.writeText(REDIRECT_URI)}
+              onClick={() => void navigator.clipboard.writeText(redirectUri())}
             >
               Kopyala
             </button>

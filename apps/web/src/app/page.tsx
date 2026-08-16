@@ -133,7 +133,8 @@ export default function HomePage() {
       <main className="main-content">
         {bootError ? (
           <p className="form-message">
-            {bootError} — Worker’ın <code>http://127.0.0.1:8787</code> üzerinde çalıştığından emin olun.
+            {bootError} — Worker servisinin ayakta olduğundan emin olun (
+            <code>docker compose ps</code> / <code>docker compose logs worker</code>).
           </p>
         ) : null}
         {youtubeNotice ? (

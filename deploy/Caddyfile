@@ -3,10 +3,17 @@
 }
 
 {$DOMAIN} {
-	encode gzip zstd
+	# API + media → worker (Next.js proxy’ye güvenme)
+	handle_path /api/* {
+		reverse_proxy worker:8787 {
+			flush_interval -1
+		}
+	}
 
-	# Next.js UI + /api/* proxy to worker
-	reverse_proxy web:3000
+	handle {
+		encode gzip zstd
+		reverse_proxy web:3000
+	}
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
