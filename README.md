@@ -41,8 +41,11 @@ sudo cutmuck-update
 YouTube OAuth redirect URI (Ayarlar’da Google Cloud’a ekleyin):
 
 ```text
+https://YOUR_DOMAIN/api/auth/login/callback
 https://YOUR_DOMAIN/api/auth/youtube/callback
 ```
+
+İlk giriş: `ADMIN_EMAIL` (varsayılan `can@pekgezer.com`) Google hesabı ile. Diğer kullanıcıları Ayarlar → İzinli kullanıcılar’dan ekleyin.
 
 ---
 
@@ -69,6 +72,10 @@ docker compose -f docker-compose.dev.yml up -d --build
 |----------|----------|
 | `CUTMUCK_DOMAIN` | HTTPS domain (zorunlu, prod) |
 | `CUTMUCK_EMAIL` | Let’s Encrypt e-posta |
+| `GOOGLE_CLIENT_ID` | Google OAuth Web client ID (giriş) |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `SESSION_SECRET` | Oturum çerezi imza anahtarı |
+| `ADMIN_EMAIL` | Yönetici Google e-postası (varsayılan `can@pekgezer.com`) |
 | `CUTMUCK_HOME` | Kurulum dizini (varsayılan `/opt/cutmuck`) |
 | `CUTMUCK_BRANCH` | Takip edilen dal (`main`) |
 

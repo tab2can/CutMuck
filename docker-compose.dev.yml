@@ -12,6 +12,10 @@ services:
       CUTMUCK_DATA: /data
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8787}
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-can@pekgezer.com}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-change-me}
     volumes:
       - ./data:/data
 

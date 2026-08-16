@@ -1,8 +1,9 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type AppSettings, type ThemeId } from "@/lib/api";
+import { useAuth } from "@/components/AuthProvider";
 import { useTheme } from "@/components/ThemeProvider";
 
 type Props = {
@@ -23,8 +24,16 @@ function redirectUri() {
   return "http://localhost:3000/api/auth/youtube/callback";
 }
 
+function loginRedirectUri() {
+  if (typeof window !== "undefined") {
+    return `${window.location.origin}/api/auth/login/callback`;
+  }
+  return "http://localhost:3000/api/auth/login/callback";
+}
+
 export function SettingsModal({ open, onClose }: Props) {
   const { theme, setTheme, settings, refreshSettings, updateSettings } = useTheme();
+  const { user } = useAuth();
   if (!open) return null;
 
   return (
@@ -35,6 +44,7 @@ export function SettingsModal({ open, onClose }: Props) {
       onClose={onClose}
       refreshSettings={refreshSettings}
       updateSettings={updateSettings}
+      isAdmin={Boolean(user?.is_admin)}
       initialClientId={(settings?.youtube_client_id as string) || ""}
       initialPrivacy={
         (settings?.youtube_privacy_default as "public" | "unlisted" | "private") || "unlisted"
@@ -52,6 +62,7 @@ function SettingsBody({
   onClose,
   refreshSettings,
   updateSettings,
+  isAdmin,
   initialClientId,
   initialPrivacy,
   secretSaved,
@@ -63,6 +74,7 @@ function SettingsBody({
   onClose: () => void;
   refreshSettings: () => Promise<void>;
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>;
+  isAdmin: boolean;
   initialClientId: string;
   initialPrivacy: "public" | "unlisted" | "private";
   secretSaved: boolean;
@@ -175,8 +187,18 @@ function SettingsBody({
         <section className="settings-section">
           <h3>YouTube API</h3>
           <p className="muted">
-            Redirect URI (Google Cloud → Authorized redirect URIs):
+            Google Cloud → Authorized redirect URIs (giriş + YouTube):
           </p>
+          <div className="uri-box">
+            <code>{loginRedirectUri()}</code>
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => void navigator.clipboard.writeText(loginRedirectUri())}
+            >
+              Kopyala
+            </button>
+          </div>
           <div className="uri-box">
             <code>{redirectUri()}</code>
             <button
@@ -254,6 +276,8 @@ function SettingsBody({
           </div>
         </section>
 
+        {isAdmin ? <AllowedUsersAdmin /> : null}
+
         {message ? (
           <p
             className={
@@ -281,5 +305,113 @@ function SettingsBody({
         </div>
       </motion.div>
     </div>
+  );
+}
+
+type AllowedUser = {
+  email: string;
+  role: string;
+  display_name?: string | null;
+  created_at?: string;
+};
+
+function AllowedUsersAdmin() {
+  const [users, setUsers] = useState<AllowedUser[]>([]);
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const list = await api<AllowedUser[]>("/auth/users");
+      setUsers(list);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Liste alınamadı");
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function add() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api("/auth/users", {
+        method: "POST",
+        body: JSON.stringify({ email: email.trim(), role: "user" }),
+      });
+      setEmail("");
+      await load();
+      setMsg("Kullanıcı eklendi");
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Eklenemedi");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(target: string) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api(`/auth/users/${encodeURIComponent(target)}`, { method: "DELETE" });
+      await load();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Silinemedi");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="settings-section">
+      <h3>İzinli kullanıcılar</h3>
+      <p className="muted">
+        Yalnızca buraya eklenen Google hesapları giriş yapabilir. Siz yönetici olarak
+        her zaman erişebilirsiniz.
+      </p>
+      <div className="allowed-add-row">
+        <input
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="ornek@gmail.com"
+          autoComplete="off"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void add();
+          }}
+        />
+        <button
+          type="button"
+          className="btn primary"
+          disabled={busy || !email.trim()}
+          onClick={() => void add()}
+        >
+          Ekle
+        </button>
+      </div>
+      <ul className="allowed-list">
+        {users.map((u) => (
+          <li key={u.email}>
+            <div>
+              <strong>{u.email}</strong>
+              <span className="muted"> · {u.role === "admin" ? "yönetici" : "kullanıcı"}</span>
+            </div>
+            {u.role === "admin" ? null : (
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={busy}
+                onClick={() => void remove(u.email)}
+              >
+                Kaldır
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {msg ? <p className="muted">{msg}</p> : null}
+    </section>
   );
 }

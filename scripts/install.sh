@@ -83,7 +83,39 @@ prompt_config() {
   CUTMUCK_DOMAIN="${CUTMUCK_DOMAIN#https://}"
   CUTMUCK_DOMAIN="${CUTMUCK_DOMAIN#http://}"
   CUTMUCK_DOMAIN="${CUTMUCK_DOMAIN%%/*}"
-  export CUTMUCK_DOMAIN CUTMUCK_EMAIL
+
+  ADMIN_EMAIL="${ADMIN_EMAIL:-can@pekgezer.com}"
+
+  # Preserve Google/session secrets on re-install (do not clobber domain just asked)
+  if [[ -f "${INSTALL_DIR}/.env" ]]; then
+    local _line _k _v
+    while IFS= read -r _line || [[ -n "${_line}" ]]; do
+      [[ "${_line}" =~ ^(GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|SESSION_SECRET|ADMIN_EMAIL)=(.*)$ ]] || continue
+      _k="${BASH_REMATCH[1]}"
+      _v="${BASH_REMATCH[2]}"
+      if [[ -z "${!_k:-}" ]]; then
+        printf -v "${_k}" '%s' "${_v}"
+      fi
+    done <"${INSTALL_DIR}/.env"
+  fi
+
+  yellow "Google Cloud OAuth (Web client) — site girişi için zorunlu"
+  yellow "Redirect URI ekleyin: https://${CUTMUCK_DOMAIN}/api/auth/login/callback"
+  if [[ -z "${GOOGLE_CLIENT_ID:-}" ]]; then
+    GOOGLE_CLIENT_ID="$(ask "GOOGLE_CLIENT_ID")"
+  fi
+  if [[ -z "${GOOGLE_CLIENT_SECRET:-}" ]]; then
+    GOOGLE_CLIENT_SECRET="$(ask "GOOGLE_CLIENT_SECRET")"
+  fi
+  if [[ -z "${GOOGLE_CLIENT_ID}" || -z "${GOOGLE_CLIENT_SECRET}" ]]; then
+    red "GOOGLE_CLIENT_ID ve GOOGLE_CLIENT_SECRET zorunlu (Google ile giriş)."
+    exit 1
+  fi
+  if [[ -z "${SESSION_SECRET:-}" ]]; then
+    SESSION_SECRET="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 32)"
+  fi
+
+  export CUTMUCK_DOMAIN CUTMUCK_EMAIL ADMIN_EMAIL GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET SESSION_SECRET
 }
 
 clone_or_update() {
@@ -105,6 +137,10 @@ write_env() {
 CUTMUCK_DOMAIN=${CUTMUCK_DOMAIN}
 CUTMUCK_EMAIL=${CUTMUCK_EMAIL}
 CUTMUCK_BRANCH=${BRANCH}
+ADMIN_EMAIL=${ADMIN_EMAIL:-can@pekgezer.com}
+GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+SESSION_SECRET=${SESSION_SECRET}
 EOF
   chmod 600 "${env_file}"
   info ".env yazıldı (${env_file})"
@@ -155,6 +191,9 @@ print_done() {
   green "CutMuck kuruldu"
   green "URL:  https://${CUTMUCK_DOMAIN}"
   yellow "DNS A kaydı → bu sunucu IP | firewall: 80/tcp, 443/tcp"
+  yellow "Yönetici: ${ADMIN_EMAIL:-can@pekgezer.com} (Google ile giriş)"
+  yellow "Google OAuth redirect URI:"
+  printf '  https://%s/api/auth/login/callback\n' "${CUTMUCK_DOMAIN}"
   yellow "YouTube OAuth redirect URI:"
   printf '  https://%s/api/auth/youtube/callback\n' "${CUTMUCK_DOMAIN}"
   info "Güncelleme: cutmuck-update  (timer: cutmuck-update.timer)"

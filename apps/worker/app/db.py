@@ -38,7 +38,102 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS allowed_emails (
+  email TEXT PRIMARY KEY,
+  role TEXT NOT NULL DEFAULT 'user',
+  display_name TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_by TEXT
+);
 """
+
+
+async def ensure_admin_seed(db: aiosqlite.Connection) -> None:
+    email = (settings.admin_email or "").strip().lower()
+    if not email:
+        return
+    cur = await db.execute("SELECT email, role FROM allowed_emails WHERE email = ?", (email,))
+    row = await cur.fetchone()
+    if row is None:
+        await db.execute(
+            "INSERT INTO allowed_emails(email, role, display_name, created_by) VALUES(?, 'admin', ?, ?)",
+            (email, "Admin", "system"),
+        )
+        await db.commit()
+    elif row["role"] != "admin":
+        await db.execute(
+            "UPDATE allowed_emails SET role = 'admin' WHERE email = ?",
+            (email,),
+        )
+        await db.commit()
+
+
+async def list_allowed_emails(db: aiosqlite.Connection) -> list[dict[str, Any]]:
+    cur = await db.execute(
+        "SELECT email, role, display_name, created_at, created_by FROM allowed_emails ORDER BY role DESC, email ASC"
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_allowed_email(db: aiosqlite.Connection, email: str) -> dict[str, Any] | None:
+    email = email.strip().lower()
+    cur = await db.execute(
+        "SELECT email, role, display_name, created_at, created_by FROM allowed_emails WHERE email = ?",
+        (email,),
+    )
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def add_allowed_email(
+    db: aiosqlite.Connection,
+    *,
+    email: str,
+    role: str = "user",
+    created_by: str | None = None,
+) -> dict[str, Any]:
+    email = email.strip().lower()
+    if "@" not in email or "." not in email.split("@")[-1]:
+        raise ValueError("Geçersiz e-posta")
+    if role not in {"admin", "user"}:
+        role = "user"
+    # Env admin is always admin
+    if email == settings.admin_email.strip().lower():
+        role = "admin"
+    await db.execute(
+        """
+        INSERT INTO allowed_emails(email, role, created_by)
+        VALUES(?, ?, ?)
+        ON CONFLICT(email) DO UPDATE SET
+          role = excluded.role,
+          created_by = COALESCE(excluded.created_by, allowed_emails.created_by)
+        """,
+        (email, role, created_by),
+    )
+    await db.commit()
+    row = await get_allowed_email(db, email)
+    assert row is not None
+    return row
+
+
+async def remove_allowed_email(db: aiosqlite.Connection, email: str) -> bool:
+    email = email.strip().lower()
+    if email == settings.admin_email.strip().lower():
+        raise ValueError("Ana yönetici silinemez")
+    row = await get_allowed_email(db, email)
+    if not row:
+        return False
+    if row["role"] == "admin":
+        cur = await db.execute(
+            "SELECT COUNT(*) AS n FROM allowed_emails WHERE role = 'admin'"
+        )
+        n = int((await cur.fetchone())["n"])
+        if n <= 1:
+            raise ValueError("Son yönetici silinemez")
+    cur = await db.execute("DELETE FROM allowed_emails WHERE email = ?", (email,))
+    await db.commit()
+    return cur.rowcount > 0
 
 
 async def get_db() -> aiosqlite.Connection:
@@ -46,6 +141,7 @@ async def get_db() -> aiosqlite.Connection:
     db.row_factory = aiosqlite.Row
     await db.executescript(SCHEMA)
     await db.commit()
+    await ensure_admin_seed(db)
     return db
 
 

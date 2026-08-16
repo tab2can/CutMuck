@@ -121,6 +121,7 @@ async function parseError(res: Response): Promise<string> {
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers || {}),

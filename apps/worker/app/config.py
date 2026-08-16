@@ -34,7 +34,14 @@ class Settings(BaseSettings):
     media_dir: Path = MEDIA_DIR
     db_path: Path = DB_PATH
 
+    # App login (Google Sign-In) — required in production
+    admin_email: str = "can@pekgezer.com"
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    session_secret: str = ""
+
 
 settings = Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 settings.media_dir.mkdir(parents=True, exist_ok=True)
+settings.admin_email = settings.admin_email.strip().lower()

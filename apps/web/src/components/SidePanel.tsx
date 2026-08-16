@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import { useState } from "react";
 import { api, type Channel } from "@/lib/api";
+import { useAuth } from "@/components/AuthProvider";
 import { ContextSurface } from "@/components/ContextMenu";
 
 type Props = {
@@ -28,6 +29,7 @@ export function SidePanel({
   onRemoved,
   onOpenSettings,
 }: Props) {
+  const { user, logout } = useAuth();
   const [addOpen, setAddOpen] = useState(false);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -124,6 +126,19 @@ export function SidePanel({
       </div>
 
       <div className="side-bottom">
+        {user ? (
+          <div className="side-user">
+            <div className="side-user-meta">
+              <span className="side-user-email" title={user.email}>
+                {user.name || user.email}
+              </span>
+              {user.is_admin ? <span className="side-user-role">yönetici</span> : null}
+            </div>
+            <button type="button" className="btn ghost" onClick={() => void logout()}>
+              Çıkış
+            </button>
+          </div>
+        ) : null}
         {addOpen ? (
           <div className="add-form">
             <input

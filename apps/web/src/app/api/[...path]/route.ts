@@ -12,6 +12,8 @@ async function proxy(req: NextRequest, path: string[]) {
   if (contentType) headers.set("content-type", contentType);
   const range = req.headers.get("range");
   if (range) headers.set("range", range);
+  const cookie = req.headers.get("cookie");
+  if (cookie) headers.set("cookie", cookie);
   // Avoid Next↔worker keep-alive storms (HLS segments open dozens of sockets).
   headers.set("connection", "close");
 
@@ -41,7 +43,17 @@ async function proxy(req: NextRequest, path: string[]) {
       if (value) outHeaders.set(key, value);
     }
 
-    // Stream body (important for large media / Range requests)
+    const anyHeaders = res.headers as Headers & { getSetCookie?: () => string[] };
+    const setCookies =
+      typeof anyHeaders.getSetCookie === "function"
+        ? anyHeaders.getSetCookie()
+        : res.headers.get("set-cookie")
+          ? [res.headers.get("set-cookie") as string]
+          : [];
+    for (const c of setCookies) {
+      outHeaders.append("set-cookie", c);
+    }
+
     return new NextResponse(res.body, {
       status: res.status,
       headers: outHeaders,

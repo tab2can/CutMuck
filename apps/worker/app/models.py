@@ -40,6 +40,11 @@ class SettingsUpdate(BaseModel):
     worker_public_url: str | None = None
 
 
+class AllowedEmailCreate(BaseModel):
+    email: str
+    role: Literal["admin", "user"] = "user"
+
+
 class DownloadRequest(BaseModel):
     vod_url: str = ""
     channel_slug: str | None = None

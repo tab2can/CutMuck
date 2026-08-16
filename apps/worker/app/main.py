@@ -12,7 +12,7 @@ from urllib.parse import quote, urljoin, urlparse
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db as database
@@ -34,7 +34,14 @@ from .kick import (
     playlist_duration_seconds,
 )
 from .live_buffer import ring_status, ring_window_path, start_live_ring, stop_live_ring
+from .login_auth import (
+    LoginAuthError,
+    build_login_auth_url,
+    exchange_login_code,
+    fetch_google_user,
+)
 from .models import (
+    AllowedEmailCreate,
     ChannelCreate,
     CutRequest,
     DownloadRequest,
@@ -44,6 +51,14 @@ from .models import (
     TimelineUpdate,
     YoutubeUploadRequest,
     parse_kick_slug,
+)
+from .session_auth import (
+    COOKIE_NAME,
+    SessionUser,
+    normalize_email,
+    session_cookie_kwargs,
+    sign_session,
+    verify_session,
 )
 from .stream import DownloadError, download_segment
 from .youtube_util import (
@@ -55,7 +70,7 @@ from .youtube_util import (
     upload_video,
 )
 
-app = FastAPI(title="CutMuck Worker", version="0.2.0")
+app = FastAPI(title="CutMuck Worker", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.web_origin, "http://127.0.0.1:3000", "http://localhost:3000"],
@@ -63,6 +78,67 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _is_public_path(path: str) -> bool:
+    if path == "/health" or path == "/auth/me":
+        return True
+    if path.startswith("/auth/login/"):
+        return True
+    return False
+
+
+def _google_login_creds() -> tuple[str, str]:
+    cid = (settings.google_client_id or "").strip()
+    secret = (settings.google_client_secret or "").strip()
+    return cid, secret
+
+
+def current_user(request: Request) -> SessionUser:
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, SessionUser):
+        raise HTTPException(401, "Giriş gerekli")
+    return user
+
+
+def require_admin(request: Request) -> SessionUser:
+    user = current_user(request)
+    if user.role != "admin":
+        raise HTTPException(403, "Bu işlem için yönetici yetkisi gerekli")
+    return user
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    path = request.url.path
+    if _is_public_path(path):
+        return await call_next(request)
+
+    token = request.cookies.get(COOKIE_NAME)
+    session = verify_session(token)
+    if not session:
+        return JSONResponse({"detail": "Giriş gerekli"}, status_code=401)
+
+    db = await database.get_db()
+    try:
+        row = await database.get_allowed_email(db, session.email)
+    finally:
+        await db.close()
+
+    if not row:
+        return JSONResponse(
+            {"detail": "Bu Google hesabının erişim izni yok"},
+            status_code=403,
+        )
+
+    request.state.user = SessionUser(
+        email=row["email"],
+        role=row["role"] if row["role"] in {"admin", "user"} else "user",
+        name=session.name,
+        picture=session.picture,
+    )
+    return await call_next(request)
+
 
 app.mount("/media", StaticFiles(directory=str(settings.media_dir)), name="media")
 
@@ -157,6 +233,170 @@ async def startup() -> None:
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "cutmuck-worker"}
+
+
+@app.get("/auth/me")
+async def auth_me(request: Request) -> dict[str, Any]:
+    token = request.cookies.get(COOKIE_NAME)
+    session = verify_session(token)
+    if not session:
+        return {"authenticated": False}
+
+    db = await database.get_db()
+    try:
+        row = await database.get_allowed_email(db, session.email)
+    finally:
+        await db.close()
+
+    if not row:
+        return {"authenticated": False, "reason": "not_allowed"}
+
+    return {
+        "authenticated": True,
+        "email": row["email"],
+        "role": row["role"],
+        "is_admin": row["role"] == "admin",
+        "name": session.name,
+        "picture": session.picture,
+        "login_redirect_uri": f"{settings.web_origin.rstrip('/')}/api/auth/login/callback",
+    }
+
+
+@app.get("/auth/login/start")
+async def login_start(request: Request) -> dict[str, str]:
+    client_id, client_secret = _google_login_creds()
+    if not client_id or not client_secret:
+        raise HTTPException(
+            503,
+            "Google giriş ayarları eksik. Sunucu .env içinde GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET gerekli.",
+        )
+    redirect_uri = f"{settings.web_origin.rstrip('/')}/api/auth/login/callback"
+    state = new_oauth_state()
+    db = await database.get_db()
+    try:
+        await database.set_setting(db, "login_oauth_state", state)
+    finally:
+        await db.close()
+    auth_url = build_login_auth_url(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        state=state,
+    )
+    return {"auth_url": auth_url, "redirect_uri": redirect_uri}
+
+
+@app.get("/auth/login/callback")
+async def login_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    origin = settings.web_origin.rstrip("/")
+    if error:
+        return RedirectResponse(f"{origin}/?login=error&reason={quote(error)}")
+    if not code:
+        return RedirectResponse(f"{origin}/?login=error&reason=missing_code")
+
+    client_id, client_secret = _google_login_creds()
+    if not client_id or not client_secret:
+        return RedirectResponse(f"{origin}/?login=error&reason=missing_credentials")
+
+    redirect_uri = f"{origin}/api/auth/login/callback"
+    db = await database.get_db()
+    try:
+        saved_state = await database.get_setting(db, "login_oauth_state")
+        if not saved_state or not state or saved_state != state:
+            return RedirectResponse(f"{origin}/?login=error&reason=state_mismatch")
+
+        try:
+            tokens = await asyncio.to_thread(
+                exchange_login_code,
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+                code=code,
+            )
+            profile = await asyncio.to_thread(
+                fetch_google_user,
+                str(tokens["access_token"]),
+            )
+        except LoginAuthError as exc:
+            return RedirectResponse(f"{origin}/?login=error&reason={quote(str(exc))}")
+
+        email = normalize_email(profile["email"])
+        row = await database.get_allowed_email(db, email)
+        if not row:
+            return RedirectResponse(f"{origin}/?login=denied")
+
+        user = SessionUser(
+            email=row["email"],
+            role=row["role"] if row["role"] in {"admin", "user"} else "user",
+            name=str(profile.get("name") or ""),
+            picture=str(profile.get("picture") or ""),
+        )
+        if profile.get("name"):
+            await db.execute(
+                "UPDATE allowed_emails SET display_name = ? WHERE email = ?",
+                (profile["name"], email),
+            )
+            await db.commit()
+
+        resp = RedirectResponse(f"{origin}/?login=ok")
+        resp.set_cookie(**session_cookie_kwargs(sign_session(user)))
+        return resp
+    finally:
+        await db.close()
+
+
+@app.post("/auth/logout")
+async def auth_logout() -> Response:
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(**session_cookie_kwargs("", clear=True))
+    return resp
+
+
+@app.get("/auth/users")
+async def auth_users_list(request: Request) -> list[dict[str, Any]]:
+    require_admin(request)
+    db = await database.get_db()
+    try:
+        return await database.list_allowed_emails(db)
+    finally:
+        await db.close()
+
+
+@app.post("/auth/users")
+async def auth_users_add(request: Request, body: AllowedEmailCreate) -> dict[str, Any]:
+    admin = require_admin(request)
+    db = await database.get_db()
+    try:
+        try:
+            return await database.add_allowed_email(
+                db,
+                email=body.email,
+                role=body.role,
+                created_by=admin.email,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    finally:
+        await db.close()
+
+
+@app.delete("/auth/users/{email}")
+async def auth_users_remove(request: Request, email: str) -> dict[str, bool]:
+    require_admin(request)
+    db = await database.get_db()
+    try:
+        try:
+            ok = await database.remove_allowed_email(db, email)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if not ok:
+            raise HTTPException(404, "Kullanıcı bulunamadı")
+        return {"ok": True}
+    finally:
+        await db.close()
 
 
 @app.get("/settings")

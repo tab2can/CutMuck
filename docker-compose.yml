@@ -50,6 +50,10 @@ services:
       CUTMUCK_DATA: /data
       PUBLIC_BASE_URL: https://${CUTMUCK_DOMAIN}
       WEB_ORIGIN: https://${CUTMUCK_DOMAIN}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-can@pekgezer.com}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
     volumes:
       - cutmuck_data:/data
     healthcheck:

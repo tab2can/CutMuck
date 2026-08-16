@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Outfit, Sora } from "next/font/google";
 import "./globals.css";
+import { AuthGate } from "@/components/AuthGate";
+import { AuthProvider } from "@/components/AuthProvider";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ToastProvider } from "@/components/Toast";
 
@@ -34,9 +36,13 @@ export default function RootLayout({
         />
       </head>
       <body className={`${outfit.variable} ${sora.variable}`}>
-        <ThemeProvider>
-          <ToastProvider>{children}</ToastProvider>
-        </ThemeProvider>
+        <AuthProvider>
+          <AuthGate>
+            <ThemeProvider>
+              <ToastProvider>{children}</ToastProvider>
+            </ThemeProvider>
+          </AuthGate>
+        </AuthProvider>
       </body>
     </html>
   );
