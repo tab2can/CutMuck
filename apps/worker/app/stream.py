@@ -125,13 +125,15 @@ def download_segment_ffmpeg(
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        "ultrafast",
         "-crf",
-        "18",
+        "22",
+        "-movflags",
+        "+faststart",
         "-c:a",
         "aac",
         "-b:a",
-        "192k",
+        "160k",
         str(output),
     ]
     proc2 = subprocess.run(cmd_enc, capture_output=True, text=True, encoding="utf-8", errors="replace")

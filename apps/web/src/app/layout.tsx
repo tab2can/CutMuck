@@ -19,6 +19,16 @@ const sora = Sora({
 export const metadata: Metadata = {
   title: "CutMuck",
   description: "Kick VOD kes ve YouTube'a yükle",
+  applicationName: "CutMuck",
+  appleWebApp: {
+    capable: true,
+    title: "CutMuck",
+    statusBarStyle: "black-translucent",
+  },
+  icons: {
+    icon: [{ url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" }],
+    apple: [{ url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" }],
+  },
 };
 
 export default function RootLayout({

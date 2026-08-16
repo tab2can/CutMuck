@@ -5,6 +5,7 @@ import { useState } from "react";
 import { api, type Channel } from "@/lib/api";
 import { useAuth } from "@/components/AuthProvider";
 import { ContextSurface } from "@/components/ContextMenu";
+import { InstallPwaButton } from "@/components/InstallPwaButton";
 
 type Props = {
   channels: Channel[];
@@ -72,6 +73,7 @@ export function SidePanel({
             ⚙
           </button>
         </div>
+        <InstallPwaButton />
       </div>
 
       <div className="channel-scroll">

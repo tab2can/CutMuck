@@ -12,6 +12,8 @@ type Props = {
   endSec: number;
   videoRef: RefObject<HTMLVideoElement | null>;
   disabled?: boolean;
+  /** Default false — publish page must not auto-start after upload */
+  autoPlay?: boolean;
 };
 
 /**
@@ -25,6 +27,7 @@ export function ClipPreviewPlayer({
   endSec,
   videoRef,
   disabled = false,
+  autoPlay = false,
 }: Props) {
   const clipLen = Math.max(0.1, endSec - startSec);
   const [rel, setRel] = useState(0);
@@ -32,7 +35,7 @@ export function ClipPreviewPlayer({
   const scrubbing = useRef(false);
 
   useEffect(() => {
-    if (!isCutFile) return;
+    if (!isCutFile || !autoPlay) return;
     const v = videoRef.current;
     if (!v) return;
     const onMeta = () => {
@@ -49,7 +52,7 @@ export function ClipPreviewPlayer({
     if (v.readyState >= 1) onMeta();
     else v.addEventListener("loadedmetadata", onMeta, { once: true });
     return () => v.removeEventListener("loadedmetadata", onMeta);
-  }, [isCutFile, src, videoRef]);
+  }, [isCutFile, src, videoRef, autoPlay]);
 
   function syncFromVideo(t: number) {
     if (scrubbing.current) return;

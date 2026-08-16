@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   formatBytes,
@@ -12,26 +12,41 @@ import {
 } from "@/lib/api";
 import { ContextSurface } from "@/components/ContextMenu";
 import { useToast } from "@/components/Toast";
+import { notifyDesktop } from "@/lib/notify";
+
+const ACTIVE = new Set(["queued", "exporting", "cutting", "uploading"]);
 
 export function JobsLibrary() {
   const router = useRouter();
   const { push } = useToast();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const prevStatus = useRef<Record<string, string>>({});
 
   const load = useCallback(async () => {
     try {
       const list = await api<Job[]>("/jobs?limit=24");
+      for (const job of list) {
+        const prev = prevStatus.current[job.id];
+        if (prev && ACTIVE.has(prev) && job.status === "done") {
+          void notifyDesktop("CutMuck", `${job.title || "Video"} YouTube’a yüklendi`);
+          push("YouTube yüklemesi tamam", "ok");
+        }
+        if (prev && ACTIVE.has(prev) && job.status === "error") {
+          push(job.error || "Yükleme başarısız", "error");
+        }
+        prevStatus.current[job.id] = job.status;
+      }
       setJobs(list);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Job’lar yüklenemedi");
     }
-  }, []);
+  }, [push]);
 
   useEffect(() => {
     void load();
-    const t = window.setInterval(() => void load(), 8000);
+    const t = window.setInterval(() => void load(), 2500);
     return () => window.clearInterval(t);
   }, [load]);
 
@@ -48,11 +63,8 @@ export function JobsLibrary() {
   function openJob(job: Job) {
     const start = Number(job.meta?.start_sec ?? 0);
     const end = Number(job.meta?.end_sec ?? 0);
-    if (job.status === "done" || job.status === "cut" || job.cut_url) {
-      const q =
-        end > start
-          ? `?start=${start}&end=${end}`
-          : "";
+    if (ACTIVE.has(job.status) || job.status === "done" || job.status === "cut" || job.cut_url) {
+      const q = end > start ? `?start=${start}&end=${end}` : "";
       router.push(`/publish/${job.id}${q}`);
       return;
     }
@@ -83,6 +95,7 @@ export function JobsLibrary() {
         {jobs.map((job, i) => {
           const thumb = (job.meta?.thumbnail as string) || null;
           const dur = Number(job.meta?.duration || 0);
+          const active = ACTIVE.has(job.status);
           return (
             <ContextSurface
               key={job.id}
@@ -126,7 +139,7 @@ export function JobsLibrary() {
             >
               <motion.button
                 type="button"
-                className="job-row"
+                className={`job-row ${active ? "job-row-active" : ""}`}
                 onClick={() => openJob(job)}
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -148,6 +161,11 @@ export function JobsLibrary() {
                     {dur > 0 ? ` · ${formatDuration(dur)}` : ""}
                     {job.cut_size_bytes ? ` · ${formatBytes(job.cut_size_bytes)}` : ""}
                   </span>
+                  {active ? (
+                    <div className="job-mini-progress">
+                      <div style={{ width: `${Math.min(100, job.progress || 0)}%` }} />
+                    </div>
+                  ) : null}
                   {job.error ? <span className="job-error">{job.error}</span> : null}
                 </div>
                 <span className={`job-pill status-${job.status}`}>

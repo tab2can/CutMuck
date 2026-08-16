@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { formatDuration } from "@/lib/api";
 
 type Props = {
@@ -15,6 +15,8 @@ type Props = {
   onOutChange: (t: number) => void;
 };
 
+const SNAP_PX = 14;
+
 export function Timeline({
   duration,
   current,
@@ -27,12 +29,12 @@ export function Timeline({
   onOutChange,
 }: Props) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const [panStart, setPanStart] = useState<number | null>(null);
+  const [dragTip, setDragTip] = useState<{ t: number; x: number } | null>(null);
 
   const viewDur = duration > 0 ? duration / Math.max(1, zoom) : 0;
-  const viewStart = Math.max(
-    0,
-    Math.min(duration - viewDur, current - viewDur / 2)
-  );
+  const autoStart = Math.max(0, Math.min(duration - viewDur, current - viewDur / 2));
+  const viewStart = panStart ?? autoStart;
 
   const toX = useCallback(
     (t: number) => {
@@ -53,8 +55,18 @@ export function Timeline({
     [viewDur, viewStart]
   );
 
+  function snap(t: number, ctrl: boolean) {
+    const el = trackRef.current;
+    if (!ctrl || !el || viewDur <= 0) return Math.max(0, Math.min(duration, t));
+    const threshold = (SNAP_PX / el.getBoundingClientRect().width) * viewDur;
+    if (t <= threshold) return 0;
+    if (t >= duration - threshold) return duration;
+    return Math.max(0, Math.min(duration, t));
+  }
+
   function onTrackClick(e: ReactMouseEvent<HTMLDivElement>) {
     if ((e.target as HTMLElement).dataset.handle) return;
+    setPanStart(null);
     onSeek(fromClientX(e.clientX));
   }
 
@@ -62,12 +74,22 @@ export function Timeline({
     e.preventDefault();
     e.stopPropagation();
     const move = (ev: MouseEvent) => {
-      const t = fromClientX(ev.clientX);
-      if (kind === "in") onInChange(Math.min(t, outPoint - 0.1));
-      else if (kind === "out") onOutChange(Math.max(t, inPoint + 0.1));
-      else onSeek(t);
+      let t = snap(fromClientX(ev.clientX), ev.ctrlKey || ev.metaKey);
+      if (kind === "in") {
+        t = Math.min(t, outPoint - 0.1);
+        onInChange(t);
+      } else if (kind === "out") {
+        t = Math.max(t, inPoint + 0.1);
+        onOutChange(t);
+      } else {
+        onSeek(t);
+      }
+      if (kind === "in" || kind === "out") {
+        setDragTip({ t, x: ev.clientX });
+      }
     };
     const up = () => {
+      setDragTip(null);
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
     };
@@ -87,7 +109,7 @@ export function Timeline({
             −
           </button>
           <span>{zoom.toFixed(1)}x</span>
-          <button type="button" className="btn ghost" onClick={() => onZoom(Math.min(8, zoom + 0.5))}>
+          <button type="button" className="btn ghost" onClick={() => onZoom(Math.min(12, zoom + 0.5))}>
             +
           </button>
         </div>
@@ -97,9 +119,23 @@ export function Timeline({
         className="timeline-track pro"
         onClick={onTrackClick}
         onWheel={(e) => {
-          if (!e.ctrlKey && !e.metaKey) return;
-          e.preventDefault();
-          onZoom(Math.min(8, Math.max(1, zoom + (e.deltaY < 0 ? 0.3 : -0.3))));
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            const next = Math.min(12, Math.max(1, zoom + (e.deltaY < 0 ? 0.3 : -0.3)));
+            const center = viewStart + viewDur / 2;
+            onZoom(next);
+            const nd = duration / Math.max(1, next);
+            setPanStart(Math.max(0, Math.min(duration - nd, center - nd / 2)));
+            return;
+          }
+          if (e.shiftKey) {
+            e.preventDefault();
+            const pan = (e.deltaY !== 0 ? e.deltaY : e.deltaX) * (viewDur / 400);
+            setPanStart((s) => {
+              const base = s ?? autoStart;
+              return Math.max(0, Math.min(Math.max(0, duration - viewDur), base + pan));
+            });
+          }
         }}
       >
         {duration > 0 ? (
@@ -129,6 +165,14 @@ export function Timeline({
               style={{ left: `${toX(current)}%` }}
               onMouseDown={(e) => startDrag("play", e)}
             />
+            {dragTip ? (
+              <div
+                className="timeline-drag-tip"
+                style={{ left: `${toX(dragTip.t)}%` }}
+              >
+                {formatDuration(dragTip.t)}
+              </div>
+            ) : null}
           </>
         ) : null}
       </div>

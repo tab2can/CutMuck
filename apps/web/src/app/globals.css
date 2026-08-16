@@ -962,6 +962,49 @@ a {
   min-height: 0;
 }
 
+.fx-timeline-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  padding: 0 2px;
+}
+
+.fx-drag-tip {
+  position: absolute;
+  top: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 0.12rem 0.4rem;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  font-size: 0.7rem;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--shadow);
+}
+
+.timeline-drag-tip {
+  position: absolute;
+  top: -1.55rem;
+  transform: translateX(-50%);
+  z-index: 6;
+  padding: 0.12rem 0.4rem;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  font-size: 0.7rem;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.fx-clip {
+  overflow: visible;
+}
+
 .player-buffering {
   position: absolute;
   inset: 0;
@@ -1823,6 +1866,30 @@ a {
   font-family: var(--font-display);
   font-size: 1.15rem;
   margin: 0;
+}
+
+.job-mini-progress {
+  margin-top: 0.35rem;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  overflow: hidden;
+}
+
+.job-mini-progress > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.35s ease;
+}
+
+.job-row-active {
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--border));
+}
+
+.install-pwa-btn {
+  margin: 0.35rem 0.65rem 0;
+  width: calc(100% - 1.3rem);
+  font-size: 0.8rem;
 }
 
 .jobs-list {

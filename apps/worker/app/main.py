@@ -751,19 +751,30 @@ async def jobs_get(request: Request, job_id: str) -> JobOut:
     db = await database.get_db()
     try:
         job = await owned_job(db, request, job_id)
-        # Background task died (reload/crash) but DB still says uploading
-        if job.get("status") in {"queued", "exporting", "uploading"}:
+        # Only mark failed if the in-memory task finished without updating status.
+        # Do NOT fail when task is missing (tab closed / poll from another page —
+        # background create_task may still be running, or worker was restarted).
+        if job.get("status") in {"queued", "exporting", "uploading", "cutting"}:
             task = _youtube_tasks.get(job_id)
-            if task is None or task.done():
-                job = (
-                    await database.update_job(
-                        db,
-                        job_id,
-                        status="error",
-                        error="Yükleme kesildi veya takıldı. Tekrar YouTube'a yükle butonuna basın.",
+            if task is not None and task.done() and not task.cancelled():
+                still = job.get("status") in {"queued", "exporting", "uploading", "cutting"}
+                if still:
+                    err = "Yükleme kesildi veya takıldı. Tekrar YouTube'a yükle butonuna basın."
+                    try:
+                        exc = task.exception()
+                        if exc:
+                            err = str(exc)[:240]
+                    except Exception:  # noqa: BLE001
+                        pass
+                    job = (
+                        await database.update_job(
+                            db,
+                            job_id,
+                            status="error",
+                            error=err,
+                        )
+                        or job
                     )
-                    or job
-                )
         return job_urls(job)
     finally:
         await db.close()
@@ -951,12 +962,32 @@ async def hls_segment(u: str, live: int = 0) -> Response:
         _hls_sem.release()
 
 
+def _sync_job_progress(job_id: str, progress: float, status: str = "cutting") -> None:
+    """Best-effort progress from worker threads (aiosqlite not usable there)."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(str(settings.db_path), timeout=5)
+        try:
+            conn.execute(
+                "UPDATE jobs SET progress = ?, status = ?, updated_at = datetime('now') WHERE id = ?",
+                (round(progress, 1), status, job_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _ensure_segment_file(
     db: Any,
     job: dict[str, Any],
     start_sec: float,
     end_sec: float,
     overlays: list[dict[str, Any]] | None = None,
+    *,
+    finalize: bool = True,
 ) -> dict[str, Any]:
     job_id = job["id"]
     meta = job.get("meta") or {}
@@ -972,7 +1003,8 @@ async def _ensure_segment_file(
     ):
         return job
 
-    await database.update_job(db, job_id, status="cutting", progress=15, error=None)
+    clip_len = max(0.1, end_sec - start_sec)
+    await database.update_job(db, job_id, status="cutting", progress=12, error=None)
     page_url = job.get("source_url") or ""
     hls_url = meta.get("export_hls_url") or meta.get("dvr_hls_url") or meta.get("hls_url")
     local = job.get("local_path")
@@ -993,10 +1025,13 @@ async def _ensure_segment_file(
 
     def _work() -> tuple[Path, str]:
         raw_dest = settings.media_dir / f"{job_id}_cut_raw.mp4"
+        _sync_job_progress(job_id, 18, "cutting")
         if local and Path(local).exists():
+            _sync_job_progress(job_id, 28, "cutting")
             path = cut_media(Path(local), raw_dest if ov else dest, start_sec, end_sec)
             tool = "local-cut"
         else:
+            _sync_job_progress(job_id, 22, "cutting")
             path, tool = download_segment(
                 page_url=page_url,
                 hls_url=hls_url,
@@ -1005,9 +1040,11 @@ async def _ensure_segment_file(
                 end_sec=end_sec,
                 quality="best",
             )
+        _sync_job_progress(job_id, 48 if ov else 52, "cutting")
         if ov:
+            _sync_job_progress(job_id, 50, "exporting")
             path = apply_overlays(
-                path, dest, ov, clip_duration=max(0.1, end_sec - start_sec)
+                path, dest, ov, clip_duration=clip_len
             )
             tool = f"{tool}+effects"
             if raw_dest.exists() and raw_dest.resolve() != dest.resolve():
@@ -1015,6 +1052,7 @@ async def _ensure_segment_file(
                     raw_dest.unlink()
                 except OSError:
                     pass
+            _sync_job_progress(job_id, 54, "exporting")
         return path, tool
 
     try:
@@ -1035,8 +1073,8 @@ async def _ensure_segment_file(
     updated = await database.update_job(
         db,
         job_id,
-        status="cut",
-        progress=100,
+        status="cut" if finalize else "exporting",
+        progress=100 if finalize else 54,
         cut_path=str(path),
         meta=meta,
     )
@@ -1146,21 +1184,8 @@ _youtube_tasks: dict[str, asyncio.Task[None]] = {}
 
 def _sync_upload_progress(job_id: str, frac: float) -> None:
     """Best-effort progress from the upload thread (aiosqlite not usable there)."""
-    import sqlite3
-
-    progress = round(55 + max(0.0, min(1.0, frac)) * 40, 1)
-    try:
-        conn = sqlite3.connect(str(settings.db_path), timeout=5)
-        try:
-            conn.execute(
-                "UPDATE jobs SET progress = ?, status = 'uploading' WHERE id = ?",
-                (progress, job_id),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception:  # noqa: BLE001
-        pass
+    progress = round(55 + max(0.0, min(1.0, frac)) * 44, 1)
+    _sync_job_progress(job_id, progress, "uploading")
 
 
 async def _run_youtube_pipeline(
@@ -1183,7 +1208,9 @@ async def _run_youtube_pipeline(
 
         await database.update_job(db, job_id, status="exporting", progress=10, error=None)
         try:
-            job = await _ensure_segment_file(db, job, start_sec, end_sec, overlays=overlays)
+            job = await _ensure_segment_file(
+                db, job, start_sec, end_sec, overlays=overlays, finalize=False
+            )
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
             await database.update_job(db, job_id, status="error", error=detail)

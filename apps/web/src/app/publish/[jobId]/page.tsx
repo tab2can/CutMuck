@@ -14,6 +14,7 @@ import { ClipPreviewPlayer } from "@/components/ClipPreviewPlayer";
 import { useNativeContextBlock } from "@/components/ContextMenu";
 import { useTheme } from "@/components/ThemeProvider";
 import { useToast } from "@/components/Toast";
+import { ensureNotifyPermission, notifyDesktop } from "@/lib/notify";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -27,7 +28,7 @@ async function waitForYoutube(jobId: string, onTick: (job: Job) => void): Promis
     if (job.status === "error") {
       throw new Error(job.error || "Yükleme başarısız");
     }
-    await sleep(1500);
+    await sleep(1200);
   }
 }
 
@@ -49,6 +50,7 @@ function PublishInner() {
   const [description, setDescription] = useState("");
   const [privacy, setPrivacy] = useState<"public" | "unlisted" | "private">("unlisted");
   const [busy, setBusy] = useState(false);
+  const [backgrounded, setBackgrounded] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [ytUrl, setYtUrl] = useState<string | null>(null);
   const [thumbDataUrl, setThumbDataUrl] = useState<string | null>(null);
@@ -61,25 +63,48 @@ function PublishInner() {
       setPrivacy(def);
       const t = (data.meta?.thumbnail as string) || null;
       if (t) setThumbDataUrl(t);
+      if (["queued", "exporting", "cutting", "uploading"].includes(data.status)) {
+        setBusy(true);
+        setBackgrounded(true);
+        setMessage(`${jobStatusLabel(data.status)} (%${Math.round(data.progress || 0)})`);
+        void waitForYoutube(jobId, (j) => {
+          setJob(j);
+          setMessage(`${jobStatusLabel(j.status)} (%${Math.round(j.progress || 0)})`);
+        })
+          .then((result) => {
+            setJob(result);
+            const url = (result.meta?.youtube as { url?: string } | undefined)?.url || null;
+            setYtUrl(url);
+            setMessage(url ? "YouTube’a yüklendi" : "Yükleme tamam");
+            void notifyDesktop("CutMuck", "YouTube yüklemesi tamamlandı");
+            push("YouTube yüklemesi tamam", "ok");
+          })
+          .catch((e) => {
+            const msg = e instanceof Error ? e.message : "Yükleme başarısız";
+            setMessage(msg);
+            push(msg, "error");
+          })
+          .finally(() => {
+            setBusy(false);
+            setBackgrounded(false);
+          });
+      }
     });
-  }, [jobId, settings?.youtube_privacy_default]);
+  }, [jobId, settings?.youtube_privacy_default, push]);
 
   useEffect(() => {
     if (!busy) return;
     const el = videoRef.current;
     if (el) {
       el.pause();
-      el.removeAttribute("src");
-      el.load();
     }
   }, [busy]);
 
   const preview = useMemo(() => {
-    if (busy) return null;
     if (job?.cut_url) return mediaSrc(job.cut_url);
     if (job?.stream_url) return mediaSrc(job.stream_url);
     return mediaSrc(job?.media_url);
-  }, [job, busy]);
+  }, [job]);
 
   const clipLen = endSec > startSec ? endSec - startSec : 0;
   const hasCut = Boolean(job?.cut_url);
@@ -105,11 +130,13 @@ function PublishInner() {
       setMessage("Geçerli bir kesit aralığı yok — editöre dönüp In/Out ayarlayın");
       return;
     }
+    await ensureNotifyPermission();
     setBusy(true);
+    setBackgrounded(false);
     setMessage(
       hasCut
         ? "Mevcut kesit kullanılıyor — YouTube’a yükleniyor…"
-        : "Kesit indiriliyor… (önizleme kapalı)"
+        : "Kesit hazırlanıyor… (sekme kapatılabilir, Son işler’den takip edin)"
     );
     setYtUrl(null);
     try {
@@ -124,6 +151,8 @@ function PublishInner() {
           thumbnail_data_url: thumbDataUrl?.startsWith("data:") ? thumbDataUrl : null,
         }),
       });
+      setBackgrounded(true);
+      push("Yükleme arka planda başladı — ana menüden takip edebilirsiniz", "info");
       const result = await waitForYoutube(jobId, (j) => {
         setJob(j);
         const pct = Math.round(j.progress || 0);
@@ -134,6 +163,7 @@ function PublishInner() {
       const url = (result.meta?.youtube as { url?: string } | undefined)?.url || null;
       setYtUrl(url);
       setMessage(url ? "YouTube’a yüklendi" : "Yükleme tamam");
+      void notifyDesktop("CutMuck", url ? "YouTube yüklemesi tamamlandı" : "Yükleme tamam");
       push("YouTube yüklemesi tamam", "ok");
       if (result.meta?.thumb_error) {
         const thumbMsg = String(result.meta.thumb_error);
@@ -148,6 +178,7 @@ function PublishInner() {
       push(msg, "error");
     } finally {
       setBusy(false);
+      setBackgrounded(false);
     }
   }
 
@@ -171,14 +202,11 @@ function PublishInner() {
               endSec={endSec}
               videoRef={videoRef}
               disabled={busy}
+              autoPlay={false}
             />
           ) : (
             <p className="muted" style={{ padding: 24 }}>
-              {busy
-                ? "Yükleme sırasında önizleme kapalı"
-                : endSec > startSec
-                  ? "Önizleme yok"
-                  : "Geçerli kesit yok — editörde In/Out ayarlayın"}
+              {endSec > startSec ? "Önizleme yok" : "Geçerli kesit yok — editörde In/Out ayarlayın"}
             </p>
           )}
         </div>
@@ -194,6 +222,11 @@ function PublishInner() {
                 <div style={{ width: `${Math.min(100, job.progress || 0)}%` }} />
               </div>
               <p className="muted">{message}</p>
+              {backgrounded ? (
+                <p className="muted" style={{ fontSize: "0.85rem" }}>
+                  Sekmeyi kapatabilirsiniz — ilerleme Ana menü → Son işler’de görünür.
+                </p>
+              ) : null}
             </div>
           ) : null}
         </section>
@@ -264,6 +297,11 @@ function PublishInner() {
         >
           {busy ? "Yükleniyor…" : hasCut ? "YouTube’a yükle (retry)" : "Kesit indir + yükle"}
         </button>
+        {busy ? (
+          <button type="button" className="btn ghost block" onClick={() => router.push("/")}>
+            Ana menüye dön (arka planda sürer)
+          </button>
+        ) : null}
       </aside>
     </div>
   );

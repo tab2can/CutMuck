@@ -363,9 +363,11 @@ def apply_overlays(
             "-c:v",
             "libx264",
             "-preset",
-            "veryfast",
+            "ultrafast",
             "-crf",
-            "20",
+            "22",
+            "-movflags",
+            "+faststart",
             str(dest),
         ]
     )
