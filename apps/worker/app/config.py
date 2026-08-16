@@ -7,11 +7,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _default_root() -> Path:
-    # apps/worker/app/config.py -> repo root
-    return Path(__file__).resolve().parents[3]
+    """Repo root locally; worker package root (/app) in Docker."""
+    # .../apps/worker/app/config.py  →  repo
+    # /app/app/config.py (Docker)     →  /app
+    here = Path(__file__).resolve().parent  # .../app
+    worker_dir = here.parent  # .../worker or /app
+    if worker_dir.name == "worker" and worker_dir.parent.name == "apps":
+        return worker_dir.parent.parent
+    return worker_dir
 
 
-ROOT = Path(os.environ.get("CUTMUCK_ROOT", str(_default_root())))
+ROOT = Path(os.environ["CUTMUCK_ROOT"]) if "CUTMUCK_ROOT" in os.environ else _default_root()
 DATA_DIR = Path(os.environ.get("CUTMUCK_DATA", str(ROOT / "data")))
 MEDIA_DIR = DATA_DIR / "media"
 DB_PATH = DATA_DIR / "cutmuck.db"

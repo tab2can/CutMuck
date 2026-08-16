@@ -18,5 +18,8 @@ ENV CUTMUCK_DATA=/data
 ENV PUBLIC_BASE_URL=http://127.0.0.1:8787
 ENV WEB_ORIGIN=http://localhost:3000
 
+# Fail the image build if the app cannot import (catches Docker path bugs early)
+RUN CUTMUCK_DATA=/tmp/cutmuck-data python -c "from app.main import app; print('ok', app.title)"
+
 EXPOSE 8787
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8787"]
