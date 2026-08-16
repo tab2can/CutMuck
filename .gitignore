@@ -3,6 +3,8 @@ node_modules/
 apps/web/node_modules/
 apps/web/.next/
 apps/worker/.venv/
+apps/worker/.venv-test/
+**/.venv*/
 **/__pycache__/
 *.pyc
 .Python
