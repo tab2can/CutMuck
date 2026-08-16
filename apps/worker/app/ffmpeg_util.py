@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -96,13 +97,56 @@ def cut_media(source: Path, dest: Path, start_sec: float, end_sec: float) -> Pat
 
 
 def _escape_drawtext(text: str) -> str:
+    """Escape for drawtext inside a comma-joined -vf graph."""
     return (
         text.replace("\\", "\\\\")
         .replace(":", "\\:")
         .replace("'", "\\'")
+        .replace(",", "\\,")
         .replace("%", "%%")
         .replace("\n", " ")
     )
+
+
+_RGBA_RE = re.compile(
+    r"rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)",
+    re.IGNORECASE,
+)
+
+
+def _ffmpeg_color(value: str, *, default_alpha: float = 1.0) -> str:
+    """
+    Convert CSS/UI colors to ffmpeg form without commas.
+    rgba(0,0,0,0.5) → 0x000000@0.50  (commas break -vf filter graphs)
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return f"black@{max(0.0, min(1.0, default_alpha)):.2f}"
+
+    m = _RGBA_RE.fullmatch(raw)
+    if m:
+        r = max(0, min(255, int(float(m.group(1)))))
+        g = max(0, min(255, int(float(m.group(2)))))
+        b = max(0, min(255, int(float(m.group(3)))))
+        if m.group(4) is not None:
+            a = max(0.0, min(1.0, float(m.group(4))))
+        else:
+            a = max(0.0, min(1.0, default_alpha))
+        return f"0x{r:02x}{g:02x}{b:02x}@{a:.2f}"
+
+    hexcol = raw.lstrip("#")
+    if re.fullmatch(r"[0-9a-fA-F]{8}", hexcol):
+        a = int(hexcol[6:8], 16) / 255.0
+        return f"0x{hexcol[:6]}@{a:.2f}"
+    if re.fullmatch(r"[0-9a-fA-F]{6}", hexcol):
+        return f"0x{hexcol}@{max(0.0, min(1.0, default_alpha)):.2f}"
+    if re.fullmatch(r"[0-9a-fA-F]{3}", hexcol):
+        expanded = "".join(ch * 2 for ch in hexcol)
+        return f"0x{expanded}@{max(0.0, min(1.0, default_alpha)):.2f}"
+
+    # Named color (white, black, …) — strip anything that could split the graph
+    named = re.sub(r"[^a-zA-Z0-9_]", "", raw) or "white"
+    return f"{named}@{max(0.0, min(1.0, default_alpha)):.2f}"
 
 
 def apply_overlays(
@@ -284,11 +328,13 @@ def apply_overlays(
         enable = f"gte(t\\,{start:.3f})"
         if end is not None:
             enable = f"between(t\\,{start:.3f}\\,{float(end):.3f})"
-        color = str(ov.get("color") or "white").replace(":", "")
+        color = _ffmpeg_color(str(ov.get("color") or "white"), default_alpha=1.0)
         if kind == "rect":
+            opacity = float(ov.get("opacity") or 0.45)
+            fill = _ffmpeg_color(str(ov.get("color") or "white"), default_alpha=opacity)
             vf.append(
                 f"drawbox=x=w*{max(0.0, x - w / 2):.4f}:y=h*{max(0.0, y - h / 2):.4f}:"
-                f"w=w*{w:.4f}:h=h*{h:.4f}:color={color}@{float(ov.get('opacity') or 0.45):.2f}:"
+                f"w=w*{w:.4f}:h=h*{h:.4f}:color={fill}:"
                 f"t=fill:enable='{enable}'"
             )
         else:
@@ -297,7 +343,9 @@ def apply_overlays(
             box = ""
             bg = str(ov.get("bg") or "").strip()
             if bg:
-                box = f":box=1:boxcolor={bg.replace(':', '')}@0.55:boxborderw=12"
+                # Prefer alpha from rgba()/hex; otherwise soft box at 0.55
+                box_color = _ffmpeg_color(bg, default_alpha=0.55)
+                box = f":box=1:boxcolor={box_color}:boxborderw=12"
             vf.append(
                 f"drawtext=text='{raw}':fontsize={size}:fontcolor={color}{box}:"
                 f"x=(w-text_w)*{x:.3f}:y=(h-text_h)*{y:.3f}:enable='{enable}'"
