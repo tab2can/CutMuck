@@ -471,3 +471,174 @@ def playlist_duration_seconds(content: str) -> float:
             continue
     return total
 
+
+def _hls_attr_uri(line: str) -> str | None:
+    key = "URI="
+    lower = line.upper()
+    i = lower.find(key)
+    if i < 0:
+        return None
+    rest = line[i + 4 :]
+    if rest.startswith('"'):
+        end = rest.find('"', 1)
+        return rest[1:end] if end > 0 else None
+    return rest.split(",", 1)[0].strip() or None
+
+
+def _absolutize_hls_line(raw: str, base: str) -> str:
+    line = raw.strip()
+    if line.startswith("#EXT-X-MAP:") or line.startswith("#EXT-X-KEY:"):
+        uri = _hls_attr_uri(line)
+        if uri and not uri.startswith("data:"):
+            abs_u = urljoin(base, uri)
+            if abs_u != uri:
+                if f'URI="{uri}"' in raw:
+                    return raw.replace(f'URI="{uri}"', f'URI="{abs_u}"')
+                if f"URI={uri}" in raw:
+                    return raw.replace(f"URI={uri}", f'URI="{abs_u}"')
+        return raw
+    if line and not line.startswith("#"):
+        return urljoin(base, line)
+    return raw
+
+
+def slice_media_playlist_range(
+    content: str,
+    playlist_url: str,
+    start_sec: float,
+    end_sec: float,
+) -> tuple[str, float]:
+    """Keep only segments covering [start, end]; force VOD+ENDLIST; absolutize URIs.
+
+    Returns (playlist_text, offset_into_first_segment) so ffmpeg -ss can trim.
+    Raises KickError if the playlist uses byte ranges (need a different downloader).
+    """
+    if end_sec <= start_sec:
+        raise KickError("Bitiş, başlangıçtan büyük olmalı")
+    if "#EXT-X-BYTERANGE" in content:
+        raise KickError("byterange playlist")
+
+    base = playlist_url.rsplit("/", 1)[0] + "/"
+    lines = content.splitlines()
+    header: list[str] = []
+    segments: list[list[str]] = []
+    durations: list[float] = []
+    current: list[str] = []
+    saw_inf = False
+    pending: list[str] = []
+
+    def flush() -> None:
+        nonlocal current, saw_inf
+        if saw_inf and current:
+            dur = 0.0
+            for raw in current:
+                s = raw.strip()
+                if s.startswith("#EXTINF:"):
+                    try:
+                        dur = float(s.split(":", 1)[1].split(",", 1)[0])
+                    except ValueError:
+                        dur = 0.0
+                    break
+            segments.append(current)
+            durations.append(dur)
+        current = []
+        saw_inf = False
+
+    for raw in lines:
+        line = raw.strip()
+        if line == "#EXT-X-ENDLIST":
+            continue
+        if line.startswith("#EXTINF"):
+            if saw_inf:
+                flush()
+            if pending:
+                current.extend(pending)
+                pending = []
+            saw_inf = True
+            current.append(raw)
+            continue
+        if saw_inf:
+            current.append(raw)
+            if line and not line.startswith("#"):
+                flush()
+            continue
+        if line.startswith("#EXT-X-MAP:") or line.startswith("#EXT-X-KEY:") or line.startswith("#EXT-X-DISCONTINUITY"):
+            pending.append(raw)
+            continue
+        if segments:
+            continue
+        header.append(raw)
+
+    flush()
+    if not segments:
+        raise KickError("Medya playlistinde segment yok")
+
+    start_sec = max(0.0, float(start_sec))
+    end_sec = float(end_sec)
+    t = 0.0
+    first_i: int | None = None
+    last_i = 0
+    first_offset = 0.0
+    for i, dur in enumerate(durations):
+        seg_end = t + max(dur, 0.001)
+        if first_i is None and seg_end > start_sec:
+            first_i = i
+            first_offset = max(0.0, start_sec - t)
+        if t < end_sec:
+            last_i = i
+        t = seg_end
+        if t >= end_sec and first_i is not None:
+            break
+
+    if first_i is None:
+        raise KickError("Kesit aralığı playlist dışında")
+
+    # One extra segment of lead-in helps copy-mode keyframe trim.
+    lead = max(0, first_i - 1)
+    if lead < first_i:
+        first_offset += sum(durations[lead:first_i])
+        first_i = lead
+
+    kept = segments[first_i : last_i + 1]
+    out_header: list[str] = []
+    has_type = False
+    has_seq = False
+    for raw in header:
+        line = raw.strip()
+        if line.startswith("#EXT-X-PLAYLIST-TYPE:"):
+            out_header.append("#EXT-X-PLAYLIST-TYPE:VOD")
+            has_type = True
+            continue
+        if line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
+            out_header.append("#EXT-X-MEDIA-SEQUENCE:0")
+            has_seq = True
+            continue
+        out_header.append(_absolutize_hls_line(raw, base))
+    if not has_type:
+        out_header.append("#EXT-X-PLAYLIST-TYPE:VOD")
+    if not has_seq:
+        out_header.append("#EXT-X-MEDIA-SEQUENCE:0")
+
+    last_map: str | None = None
+    last_key: str | None = None
+    for prev in segments[:first_i]:
+        for raw in prev:
+            s = raw.strip()
+            if s.startswith("#EXT-X-MAP:"):
+                last_map = raw
+            elif s.startswith("#EXT-X-KEY:"):
+                last_key = raw
+    header_has_map = any(r.strip().startswith("#EXT-X-MAP:") for r in out_header)
+    header_has_key = any(r.strip().startswith("#EXT-X-KEY:") for r in out_header)
+
+    body: list[str] = list(out_header)
+    if last_map and not header_has_map:
+        body.append(_absolutize_hls_line(last_map, base))
+    if last_key and not header_has_key:
+        body.append(_absolutize_hls_line(last_key, base))
+    for seg in kept:
+        for raw in seg:
+            body.append(_absolutize_hls_line(raw, base))
+    body.append("#EXT-X-ENDLIST")
+    return "\n".join(body) + "\n", first_offset
+

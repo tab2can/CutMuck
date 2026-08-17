@@ -21,14 +21,14 @@ _CHUNK_UNIT = 256 * 1024
 
 
 def _chunk_size_for(file_size: int) -> int:
-    """Larger chunks for big uploads → fewer round-trips (30–40GB friendly)."""
-    if file_size >= 8 * 1024**3:  # >= 8 GiB
-        return 32 * _CHUNK_UNIT  # 8 MiB
-    if file_size >= 1024**3:  # >= 1 GiB
-        return 16 * _CHUNK_UNIT  # 4 MiB
-    if file_size >= 200 * 1024**2:  # >= 200 MiB
-        return 8 * _CHUNK_UNIT  # 2 MiB
-    return 4 * _CHUNK_UNIT  # 1 MiB
+    """Large chunks → fewer HTTPS round-trips on a fast uplink."""
+    if file_size >= 4 * 1024**3:  # >= 4 GiB
+        return 512 * _CHUNK_UNIT  # 128 MiB
+    if file_size >= 512 * 1024**2:  # >= 512 MiB
+        return 256 * _CHUNK_UNIT  # 64 MiB
+    if file_size >= 80 * 1024**2:  # >= 80 MiB
+        return 128 * _CHUNK_UNIT  # 32 MiB
+    return 64 * _CHUNK_UNIT  # 16 MiB
 
 
 class YoutubeError(Exception):
@@ -185,8 +185,7 @@ def upload_video(
         raise YoutubeError("Kesit dosyası boş")
 
     chunk_size = _chunk_size_for(file_size)
-    # Large chunks need longer write/read windows
-    io_timeout = 180.0 if chunk_size >= 4 * _CHUNK_UNIT else 120.0
+    io_timeout = 600.0 if chunk_size >= 32 * _CHUNK_UNIT else 180.0
     timeout = httpx.Timeout(io_timeout, connect=30.0, read=io_timeout, write=io_timeout)
 
     body = {
@@ -208,7 +207,7 @@ def upload_video(
             if not creds.token:
                 raise YoutubeError("Access token alınamadı")
 
-            with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+            with httpx.Client(timeout=timeout, follow_redirects=False, http2=False) as client:
                 init = client.post(
                     UPLOAD_INIT_URL,
                     params={"uploadType": "resumable", "part": "snippet,status"},

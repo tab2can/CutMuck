@@ -1026,12 +1026,15 @@ async def _ensure_segment_file(
     def _work() -> tuple[Path, str]:
         raw_dest = settings.media_dir / f"{job_id}_cut_raw.mp4"
         _sync_job_progress(job_id, 18, "cutting")
+
+        def _dl_prog(frac: float) -> None:
+            _sync_job_progress(job_id, 18 + max(0.0, min(1.0, frac)) * 30, "cutting")
+
         if local and Path(local).exists():
             _sync_job_progress(job_id, 28, "cutting")
             path = cut_media(Path(local), raw_dest if ov else dest, start_sec, end_sec)
             tool = "local-cut"
         else:
-            _sync_job_progress(job_id, 22, "cutting")
             path, tool = download_segment(
                 page_url=page_url,
                 hls_url=hls_url,
@@ -1039,12 +1042,15 @@ async def _ensure_segment_file(
                 start_sec=start_sec,
                 end_sec=end_sec,
                 quality="best",
+                on_progress=_dl_prog,
             )
-        _sync_job_progress(job_id, 48 if ov else 52, "cutting")
         if ov:
-            _sync_job_progress(job_id, 50, "exporting")
+            def _ov_prog(frac: float) -> None:
+                _sync_job_progress(job_id, 48 + max(0.0, min(1.0, frac)) * 26, "exporting")
+
+            _sync_job_progress(job_id, 48, "exporting")
             path = apply_overlays(
-                path, dest, ov, clip_duration=clip_len
+                path, dest, ov, clip_duration=clip_len, on_progress=_ov_prog
             )
             tool = f"{tool}+effects"
             if raw_dest.exists() and raw_dest.resolve() != dest.resolve():
@@ -1052,7 +1058,9 @@ async def _ensure_segment_file(
                     raw_dest.unlink()
                 except OSError:
                     pass
-            _sync_job_progress(job_id, 54, "exporting")
+            _sync_job_progress(job_id, 74, "exporting")
+        else:
+            _sync_job_progress(job_id, 74, "cutting")
         return path, tool
 
     try:
@@ -1074,7 +1082,7 @@ async def _ensure_segment_file(
         db,
         job_id,
         status="cut" if finalize else "exporting",
-        progress=100 if finalize else 54,
+        progress=100 if finalize else 74,
         cut_path=str(path),
         meta=meta,
     )
@@ -1184,7 +1192,7 @@ _youtube_tasks: dict[str, asyncio.Task[None]] = {}
 
 def _sync_upload_progress(job_id: str, frac: float) -> None:
     """Best-effort progress from the upload thread (aiosqlite not usable there)."""
-    progress = round(55 + max(0.0, min(1.0, frac)) * 44, 1)
+    progress = round(75 + max(0.0, min(1.0, frac)) * 24, 1)
     _sync_job_progress(job_id, progress, "uploading")
 
 
@@ -1236,7 +1244,7 @@ async def _run_youtube_pipeline(
             )
             return
 
-        await database.update_job(db, job_id, status="uploading", progress=55, error=None)
+        await database.update_job(db, job_id, status="uploading", progress=75, error=None)
         path = Path(upload_path)
         size = path.stat().st_size
         # Assume ~512 KiB/s worst case + 20 min slack (multi‑GB uploads)
