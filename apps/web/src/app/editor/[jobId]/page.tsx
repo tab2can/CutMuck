@@ -10,6 +10,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
+  type CSSProperties,
 } from "react";
 import {
   api,
@@ -26,7 +27,14 @@ import { OverlayCanvas } from "@/components/OverlayCanvas";
 import { Timeline } from "@/components/Timeline";
 import { SmoothFadeOverlay } from "@/components/SmoothFadeOverlay";
 import { VideoControls } from "@/components/VideoControls";
+import { SplitHandle } from "@/components/SplitHandle";
 import { useToast } from "@/components/Toast";
+import {
+  DEFAULT_EDITOR_LAYOUT,
+  readEditorLayout,
+  writeEditorLayout,
+  type EditorLayout,
+} from "@/lib/editorLayout";
 import type Hls from "hls.js";
 
 function uid() {
@@ -63,6 +71,11 @@ export default function EditorPage() {
   const [ringNote, setRingNote] = useState<string | null>(null);
   const [behindLive, setBehindLive] = useState(false);
   const [tabFs, setTabFs] = useState(false);
+  const [controlsHover, setControlsHover] = useState(false);
+  const [layout, setLayout] = useState<EditorLayout>(DEFAULT_EDITOR_LAYOUT);
+  const controlsHideTimer = useRef<number | null>(null);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
   const [holdHud, setHoldHud] = useState<number | null>(null);
   const clickTimerRef = useRef<number | null>(null);
   const holdTimerRef = useRef<number | null>(null);
@@ -192,6 +205,38 @@ export default function EditorPage() {
   const poster = (job?.meta?.thumbnail as string) || null;
 
   useEffect(() => {
+    setLayout(readEditorLayout());
+  }, []);
+
+  function persistLayout() {
+    writeEditorLayout(layoutRef.current);
+  }
+
+  function showPlayerControls() {
+    if (controlsHideTimer.current != null) {
+      window.clearTimeout(controlsHideTimer.current);
+      controlsHideTimer.current = null;
+    }
+    setControlsHover(true);
+  }
+
+  function hidePlayerControlsSoon() {
+    if (controlsHideTimer.current != null) window.clearTimeout(controlsHideTimer.current);
+    controlsHideTimer.current = window.setTimeout(() => {
+      controlsHideTimer.current = null;
+      setControlsHover(false);
+    }, 420);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (controlsHideTimer.current != null) {
+        window.clearTimeout(controlsHideTimer.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isLive) return;
     setMuted(true);
   }, [isLive]);
@@ -258,8 +303,10 @@ export default function EditorPage() {
     const v = videoRef.current;
     if (!v) return;
     if (v.paused) {
-      // Watching live edge: on resume, catch up to Kick live (not the pause point)
-      if (isLive && !behindLive) {
+      if (loopSel && !isLive) {
+        seekTo(inPoint);
+      } else if (isLive && !behindLive) {
+        // Watching live edge: on resume, catch up to Kick live (not the pause point)
         seekHlsLiveEdge(hlsRef.current, v);
         setBehindLive(false);
       }
@@ -328,6 +375,7 @@ export default function EditorPage() {
       setHoldHud(2);
       const v = videoRef.current;
       if (v?.paused) {
+        if (loopSel && !isLive) seekTo(inPoint);
         void v.play().catch(() => undefined);
         setPlaying(true);
       }
@@ -628,9 +676,21 @@ export default function EditorPage() {
         </div>
       </header>
 
-      <div className="editor-body">
+      <div
+        className="editor-body"
+        style={
+          {
+            "--editor-side-w": `${layout.sideW}px`,
+            "--player-max-h": `${layout.playerH}px`,
+          } as CSSProperties
+        }
+      >
         <div className="editor-main">
-          <div className={`player-chrome ${tabFs ? "tab-fs" : ""}`}>
+          <div
+            className={`player-chrome ${tabFs ? "tab-fs" : ""} ${controlsHover || tabFs ? "show-controls" : ""}`}
+            onMouseEnter={showPlayerControls}
+            onMouseLeave={hidePlayerControlsSoon}
+          >
             {tabFs ? (
               <button
                 type="button"
@@ -755,33 +815,49 @@ export default function EditorPage() {
                 <p className="muted">{error || "Önizleme hazırlanıyor…"}</p>
               )}
               {buffering && src ? <div className="player-buffering">Yükleniyor…</div> : null}
-            </div>
 
-            <VideoControls
-              current={current}
-              duration={timelineDur}
-              playing={playing}
-              buffering={buffering}
-              muted={muted}
-              volume={volume}
-              rate={rate}
-              live={isLive}
-              atLiveEdge={atLiveEdge}
-              expanded={tabFs}
-              disabled={!ready || !src}
-              onTogglePlay={togglePlay}
-              onSeek={seekTo}
-              onSkip={(d) => seekTo(current + d)}
-              onRateChange={setRate}
-              onMuteToggle={() => setMuted((m) => !m)}
-              onVolumeChange={(v) => {
-                setVolume(v);
-                setMuted(v === 0);
-              }}
-              onGoLive={goLiveEdge}
-              onToggleExpand={() => setTabFs((v) => !v)}
-            />
+              <div className="player-controls-overlay">
+                <VideoControls
+                  current={current}
+                  duration={timelineDur}
+                  playing={playing}
+                  buffering={buffering}
+                  muted={muted}
+                  volume={volume}
+                  rate={rate}
+                  live={isLive}
+                  atLiveEdge={atLiveEdge}
+                  expanded={tabFs}
+                  overlay
+                  disabled={!ready || !src}
+                  onTogglePlay={togglePlay}
+                  onSeek={seekTo}
+                  onSkip={(d) => seekTo(current + d)}
+                  onRateChange={setRate}
+                  onMuteToggle={() => setMuted((m) => !m)}
+                  onVolumeChange={(v) => {
+                    setVolume(v);
+                    setMuted(v === 0);
+                  }}
+                  onGoLive={goLiveEdge}
+                  onToggleExpand={() => setTabFs((v) => !v)}
+                />
+              </div>
+            </div>
           </div>
+
+          {!tabFs ? (
+            <SplitHandle
+              orientation="horizontal"
+              onDelta={(dy) =>
+                setLayout((prev) => ({
+                  ...prev,
+                  playerH: Math.min(760, Math.max(200, prev.playerH + dy)),
+                }))
+              }
+              onDragEnd={persistLayout}
+            />
+          ) : null}
 
           <div className="editor-dock">
             <div className="transport compact">
@@ -828,6 +904,7 @@ export default function EditorPage() {
               {ringNote ? <span className="muted">{ringNote}</span> : null}
             </div>
 
+            <div className="dock-clip-panel" style={{ height: layout.clipTimelineH }}>
             <ContextSurface
               className="timeline docked"
               items={[
@@ -869,7 +946,21 @@ export default function EditorPage() {
                 }}
               />
             </ContextSurface>
+            </div>
 
+            <SplitHandle
+              orientation="horizontal"
+              className="dock-split"
+              onDelta={(dy) =>
+                setLayout((prev) => ({
+                  ...prev,
+                  clipTimelineH: Math.min(440, Math.max(72, prev.clipTimelineH + dy)),
+                }))
+              }
+              onDragEnd={persistLayout}
+            />
+
+            <div className="dock-fx-panel">
             <EffectsTimeline
               overlays={overlays}
               duration={timelineDur}
@@ -887,10 +978,22 @@ export default function EditorPage() {
               onRemove={removeOverlay}
               onAdd={() => addEffect("text")}
             />
+            </div>
 
             {error ? <p className="form-message">{error}</p> : null}
           </div>
         </div>
+
+        <SplitHandle
+          orientation="vertical"
+          onDelta={(dx) =>
+            setLayout((prev) => ({
+              ...prev,
+              sideW: Math.min(760, Math.max(320, prev.sideW - dx)),
+            }))
+          }
+          onDragEnd={persistLayout}
+        />
 
         <aside className="editor-side">
           <div className="fx-side-palette">

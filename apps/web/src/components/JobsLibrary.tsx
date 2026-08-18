@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import {
   api,
   formatBytes,
@@ -16,11 +16,21 @@ import { notifyDesktop } from "@/lib/notify";
 
 const ACTIVE = new Set(["queued", "exporting", "cutting", "uploading"]);
 
+function IconTrash() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+      <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
 export function JobsLibrary() {
   const router = useRouter();
   const { push } = useToast();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [deletingAll, setDeletingAll] = useState(false);
   const prevStatus = useRef<Record<string, string>>({});
 
   const load = useCallback(async () => {
@@ -54,10 +64,50 @@ export function JobsLibrary() {
     try {
       await api(`/jobs/${id}`, { method: "DELETE" });
       setJobs((prev) => prev.filter((j) => j.id !== id));
+      delete prevStatus.current[id];
       push("İş silindi", "ok");
     } catch (e) {
       push(e instanceof Error ? e.message : "Silinemedi", "error");
     }
+  }
+
+  async function removeAll() {
+    if (jobs.length === 0 || deletingAll) return;
+    const activeCount = jobs.filter((j) => ACTIVE.has(j.status)).length;
+    const extra =
+      activeCount > 0
+        ? `\n\n${activeCount} iş hâlâ devam ediyor; silinirse yükleme kesilir.`
+        : "";
+    if (!window.confirm(`${jobs.length} işin tamamı silinsin mi?${extra}`)) return;
+
+    setDeletingAll(true);
+    const ids = jobs.map((j) => j.id);
+    let ok = 0;
+    let fail = 0;
+    const failedIds = new Set<string>();
+    for (const id of ids) {
+      try {
+        await api(`/jobs/${id}`, { method: "DELETE" });
+        ok += 1;
+        delete prevStatus.current[id];
+      } catch {
+        fail += 1;
+        failedIds.add(id);
+      }
+    }
+    setJobs((prev) => prev.filter((j) => failedIds.has(j.id)));
+    if (fail === 0) {
+      push(`${ok} iş silindi`, "ok");
+    } else {
+      push(`${ok} silindi, ${fail} silinemedi`, fail > ok ? "error" : "ok");
+    }
+    setDeletingAll(false);
+  }
+
+  function onDeleteClick(e: MouseEvent<HTMLButtonElement>, id: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    void remove(id);
   }
 
   function openJob(job: Job) {
@@ -71,13 +121,39 @@ export function JobsLibrary() {
     router.push(`/editor/${job.id}`);
   }
 
+  const head = (
+    <div className="jobs-library-head">
+      <h2>Son işler</h2>
+      <div className="jobs-library-actions">
+        {jobs.length > 0 ? (
+          <button
+            type="button"
+            className="btn ghost danger"
+            disabled={deletingAll}
+            onClick={() => void removeAll()}
+          >
+            Hepsini sil
+          </button>
+        ) : null}
+        <button type="button" className="btn ghost" onClick={() => void load()}>
+          Yenile
+        </button>
+      </div>
+    </div>
+  );
+
   if (error) {
-    return <p className="form-message">{error}</p>;
+    return (
+      <section className="jobs-library">
+        {head}
+        <p className="form-message">{error}</p>
+      </section>
+    );
   }
   if (jobs.length === 0) {
     return (
       <section className="jobs-library">
-        <h2>Son işler</h2>
+        {head}
         <p className="muted">Henüz iş yok. Bir VOD veya klip açarak başlayın.</p>
       </section>
     );
@@ -85,12 +161,7 @@ export function JobsLibrary() {
 
   return (
     <section className="jobs-library">
-      <div className="jobs-library-head">
-        <h2>Son işler</h2>
-        <button type="button" className="btn ghost" onClick={() => void load()}>
-          Yenile
-        </button>
-      </div>
+      {head}
       <div className="jobs-list">
         {jobs.map((job, i) => {
           const thumb = (job.meta?.thumbnail as string) || null;
@@ -137,41 +208,50 @@ export function JobsLibrary() {
                 },
               ]}
             >
-              <motion.button
-                type="button"
+              <motion.div
                 className={`job-row ${active ? "job-row-active" : ""}`}
-                onClick={() => openJob(job)}
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: Math.min(i * 0.03, 0.25) }}
               >
-                <div className="job-thumb">
-                  {thumb ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={thumb} alt="" />
-                  ) : (
-                    <div className="thumb-fallback" />
-                  )}
-                </div>
-                <div className="job-meta">
-                  <strong>{job.title || "İsimsiz iş"}</strong>
-                  <span className="muted">
-                    {job.channel_slug ? `@${job.channel_slug} · ` : ""}
-                    {jobStatusLabel(job.status)}
-                    {dur > 0 ? ` · ${formatDuration(dur)}` : ""}
-                    {job.cut_size_bytes ? ` · ${formatBytes(job.cut_size_bytes)}` : ""}
+                <button type="button" className="job-row-body" onClick={() => openJob(job)}>
+                  <div className="job-thumb">
+                    {thumb ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={thumb} alt="" />
+                    ) : (
+                      <div className="thumb-fallback" />
+                    )}
+                  </div>
+                  <div className="job-meta">
+                    <strong>{job.title || "İsimsiz iş"}</strong>
+                    <span className="muted">
+                      {job.channel_slug ? `@${job.channel_slug} · ` : ""}
+                      {jobStatusLabel(job.status)}
+                      {dur > 0 ? ` · ${formatDuration(dur)}` : ""}
+                      {job.cut_size_bytes ? ` · ${formatBytes(job.cut_size_bytes)}` : ""}
+                    </span>
+                    {active ? (
+                      <div className="job-mini-progress">
+                        <div style={{ width: `${Math.min(100, job.progress || 0)}%` }} />
+                      </div>
+                    ) : null}
+                    {job.error ? <span className="job-error">{job.error}</span> : null}
+                  </div>
+                  <span className={`job-pill status-${job.status}`}>
+                    {Math.round(job.progress || 0)}%
                   </span>
-                  {active ? (
-                    <div className="job-mini-progress">
-                      <div style={{ width: `${Math.min(100, job.progress || 0)}%` }} />
-                    </div>
-                  ) : null}
-                  {job.error ? <span className="job-error">{job.error}</span> : null}
-                </div>
-                <span className={`job-pill status-${job.status}`}>
-                  {Math.round(job.progress || 0)}%
-                </span>
-              </motion.button>
+                </button>
+                <button
+                  type="button"
+                  className="job-delete-btn"
+                  title="Sil"
+                  aria-label="İşi sil"
+                  onClick={(e) => onDeleteClick(e, job.id)}
+                >
+                  <IconTrash />
+                </button>
+              </motion.div>
             </ContextSurface>
           );
         })}

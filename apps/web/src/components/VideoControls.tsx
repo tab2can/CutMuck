@@ -15,6 +15,7 @@ type Props = {
   live?: boolean;
   atLiveEdge?: boolean;
   expanded?: boolean;
+  overlay?: boolean;
   onTogglePlay: () => void;
   onSeek: (time: number) => void;
   onSkip: (delta: number) => void;
@@ -101,6 +102,7 @@ export function VideoControls({
   live,
   atLiveEdge = true,
   expanded,
+  overlay,
   onTogglePlay,
   onSeek,
   onSkip,
@@ -121,7 +123,11 @@ export function VideoControls({
   }
 
   return (
-    <div className={`pc-controls ${disabled ? "disabled" : ""} ${live ? "is-live" : ""}`}>
+    <div
+      className={`pc-controls ${overlay ? "overlay" : ""} ${disabled ? "disabled" : ""} ${live ? "is-live" : ""}`}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
       <div className="pc-scrub" onClick={onBarClick} role="slider" aria-valuenow={current}>
         <div className="pc-scrub-track">
           <div className="pc-scrub-fill" style={{ width: `${progress}%` }} />
