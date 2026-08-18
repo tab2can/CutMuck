@@ -1,16 +1,17 @@
-FROM node:20-bookworm-slim AS web-deps
+ARG NODE_IMAGE=public.ecr.aws/docker/library/node:20-bookworm-slim
+FROM ${NODE_IMAGE} AS web-deps
 WORKDIR /app
 COPY apps/web/package.json apps/web/package-lock.json ./
 RUN npm ci
 
-FROM node:20-bookworm-slim AS web-build
+FROM ${NODE_IMAGE} AS web-build
 WORKDIR /app
 COPY --from=web-deps /app/node_modules ./node_modules
 COPY apps/web ./
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:20-bookworm-slim AS web
+FROM ${NODE_IMAGE} AS web
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

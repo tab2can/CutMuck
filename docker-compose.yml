@@ -1,7 +1,8 @@
 # CutMuck production stack — Caddy (HTTPS) + Next.js + FastAPI worker
 services:
   caddy:
-    image: caddy:2.8-alpine
+    image: ${CUTMUCK_CADDY_IMAGE:-public.ecr.aws/docker/library/caddy:2.8-alpine}
+    pull_policy: missing
     restart: unless-stopped
     ports:
       - "80:80"
@@ -24,6 +25,9 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      args:
+        NODE_IMAGE: ${CUTMUCK_NODE_IMAGE:-public.ecr.aws/docker/library/node:20-bookworm-slim}
+    pull_policy: missing
     restart: unless-stopped
     expose:
       - "3000"
@@ -41,6 +45,9 @@ services:
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
+      args:
+        PYTHON_IMAGE: ${CUTMUCK_PYTHON_IMAGE:-public.ecr.aws/docker/library/python:3.11-slim-bookworm}
+    pull_policy: missing
     restart: unless-stopped
     expose:
       - "8787"

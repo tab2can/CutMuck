@@ -151,14 +151,10 @@ compose_up() {
   cd "${INSTALL_DIR}"
   export COMPOSE_HTTP_TIMEOUT="${COMPOSE_HTTP_TIMEOUT:-180}"
   export DOCKER_CLIENT_TIMEOUT="${DOCKER_CLIENT_TIMEOUT:-180}"
-  if ! docker image inspect node:20-bookworm-slim >/dev/null 2>&1; then
-    if docker pull mirror.gcr.io/library/node:20-bookworm-slim; then
-      docker tag mirror.gcr.io/library/node:20-bookworm-slim node:20-bookworm-slim
-    else
-      docker pull node:20-bookworm-slim
-    fi
-  fi
-  docker compose -f "${COMPOSE_FILE}" --env-file .env up -d --build
+  export COMPOSE_FILE
+  # shellcheck disable=SC1091
+  source "${INSTALL_DIR}/scripts/docker-images.sh"
+  cutmuck_compose_rebuild
 }
 
 install_updater() {
