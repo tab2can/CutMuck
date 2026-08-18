@@ -149,6 +149,14 @@ EOF
 compose_up() {
   info "Image'lar build edilip başlatılıyor (ilk sefer uzun sürebilir)…"
   cd "${INSTALL_DIR}"
+  export COMPOSE_HTTP_TIMEOUT="${COMPOSE_HTTP_TIMEOUT:-180}"
+  export DOCKER_CLIENT_TIMEOUT="${DOCKER_CLIENT_TIMEOUT:-180}"
+  if ! docker image inspect node:20-bookworm-slim >/dev/null 2>&1; then
+    if ! docker pull node:20-bookworm-slim; then
+      docker pull mirror.gcr.io/library/node:20-bookworm-slim
+      docker tag mirror.gcr.io/library/node:20-bookworm-slim node:20-bookworm-slim
+    fi
+  fi
   docker compose -f "${COMPOSE_FILE}" --env-file .env up -d --build
 }
 

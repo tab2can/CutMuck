@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # CutMuck — pull latest from GitHub and rebuild if changed
 # Installed as /usr/local/bin/cutmuck-update by install.sh
+#
+#   sudo cutmuck-update           # git değiştiyse rebuild
+#   sudo cutmuck-update --force   # git aynı olsa da rebuild (yarım kalan deploy)
 
 set -euo pipefail
 
@@ -8,8 +11,15 @@ INSTALL_DIR="${CUTMUCK_HOME:-/opt/cutmuck}"
 BRANCH="${CUTMUCK_BRANCH:-main}"
 COMPOSE_FILE="docker-compose.yml"
 LOCK="/var/lock/cutmuck-update.lock"
+export COMPOSE_HTTP_TIMEOUT="${COMPOSE_HTTP_TIMEOUT:-180}"
+export DOCKER_CLIENT_TIMEOUT="${DOCKER_CLIENT_TIMEOUT:-180}"
 
 log() { printf '[cutmuck-update] %s\n' "$*"; }
+
+FORCE=0
+if [[ "${1:-}" == "--force" || "${1:-}" == "--rebuild" ]]; then
+  FORCE=1
+fi
 
 if [[ ! -d "${INSTALL_DIR}/.git" ]]; then
   log "Kurulum bulunamadı: ${INSTALL_DIR}"
@@ -34,6 +44,50 @@ if [[ -f .env ]]; then
   BRANCH="${CUTMUCK_BRANCH:-$BRANCH}"
 fi
 
+ensure_base_image() {
+  local name="$1"
+  if docker image inspect "${name}" >/dev/null 2>&1; then
+    log "Yerel imaj var: ${name}"
+    return 0
+  fi
+  local attempt
+  for attempt in 1 2 3; do
+    log "docker pull ${name} (${attempt}/3)"
+    if docker pull "${name}"; then
+      return 0
+    fi
+    sleep $((attempt * 5))
+  done
+  local mirror="mirror.gcr.io/library/${name}"
+  log "Docker Hub zaman aşımı — ayna: ${mirror}"
+  if docker pull "${mirror}"; then
+    docker tag "${mirror}" "${name}"
+    return 0
+  fi
+  log "İmaj çekilemedi: ${name}"
+  return 1
+}
+
+compose_rebuild() {
+  ensure_base_image "node:20-bookworm-slim"
+  ensure_base_image "python:3.11-slim-bookworm" || true
+  local attempt pull_flag=()
+  if docker compose build --help 2>/dev/null | grep -q -- '--pull'; then
+    pull_flag=(--pull never)
+  fi
+  for attempt in 1 2 3; do
+    log "compose build (${attempt}/3)"
+    if docker compose -f "${COMPOSE_FILE}" --env-file .env build "${pull_flag[@]}"; then
+      docker compose -f "${COMPOSE_FILE}" --env-file .env up -d
+      return 0
+    fi
+    log "Build başarısız, 8s sonra tekrar"
+    sleep 8
+  done
+  log "compose build --pull never olmadı, Hub ile son deneme"
+  docker compose -f "${COMPOSE_FILE}" --env-file .env up -d --build
+}
+
 git fetch --tags origin
 LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/${BRANCH}" 2>/dev/null || true)"
@@ -43,19 +97,23 @@ if [[ -z "${REMOTE}" ]]; then
   exit 1
 fi
 
-if [[ "${LOCAL}" == "${REMOTE}" ]]; then
+if [[ "${LOCAL}" == "${REMOTE}" && "${FORCE}" != 1 ]]; then
   log "Güncel (${LOCAL:0:7})"
   exit 0
 fi
 
-log "Güncelleme: ${LOCAL:0:7} → ${REMOTE:0:7}"
-git checkout "${BRANCH}"
-git pull --ff-only origin "${BRANCH}"
+if [[ "${LOCAL}" != "${REMOTE}" ]]; then
+  log "Güncelleme: ${LOCAL:0:7} → ${REMOTE:0:7}"
+  git checkout "${BRANCH}"
+  git pull --ff-only origin "${BRANCH}"
+else
+  log "Kod güncel (${LOCAL:0:7}) — zorunlu rebuild"
+fi
 
 # Re-install updater script in case it changed
 if [[ -f scripts/update.sh ]]; then
   install -m 755 scripts/update.sh /usr/local/bin/cutmuck-update
 fi
 
-docker compose -f "${COMPOSE_FILE}" --env-file .env up -d --build
+compose_rebuild
 log "Güncelleme tamam"
