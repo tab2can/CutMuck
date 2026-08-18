@@ -44,6 +44,7 @@ from .login_auth import (
 )
 from .models import (
     AllowedEmailCreate,
+    ChannelAssetCreate,
     ChannelCreate,
     CutRequest,
     DownloadRequest,
@@ -63,6 +64,13 @@ from .session_auth import (
     verify_session,
 )
 from .stream import DownloadError, download_segment
+from .thumb_assets import (
+    MAX_ASSETS_PER_CHANNEL,
+    asset_path,
+    parse_image_data_url,
+    safe_owner,
+    safe_slug,
+)
 from .youtube_util import (
     YoutubeError,
     build_auth_url,
@@ -515,6 +523,116 @@ async def channels_delete(request: Request, slug: str) -> dict[str, bool]:
         ok = await database.delete_channel(db, slug, owner_email=user.email)
         if not ok:
             raise HTTPException(404, "Kanal bulunamadı")
+        key = safe_slug(slug)
+        await database.delete_channel_assets_for_slug(
+            db, owner_email=user.email, slug=key
+        )
+        folder = settings.assets_dir / safe_owner(user.email) / key
+        if folder.exists():
+            import shutil
+
+            shutil.rmtree(folder, ignore_errors=True)
+        return {"ok": True}
+    finally:
+        await db.close()
+
+
+def _asset_public(row: dict[str, Any], slug: str) -> dict[str, Any]:
+    asset_id = row["id"]
+    return {
+        "id": asset_id,
+        "name": row.get("name") or "görsel",
+        "mime": row.get("mime") or "image/png",
+        "created_at": row.get("created_at"),
+        "url": f"/channels/{quote(slug)}/assets/{quote(asset_id)}/file",
+    }
+
+
+@app.get("/channels/{slug}/assets")
+async def channel_assets_list(request: Request, slug: str) -> list[dict[str, Any]]:
+    user = current_user(request)
+    key = safe_slug(slug)
+    db = await database.get_db()
+    try:
+        rows = await database.list_channel_assets(db, owner_email=user.email, slug=key)
+        return [_asset_public(r, key) for r in rows]
+    finally:
+        await db.close()
+
+
+@app.post("/channels/{slug}/assets")
+async def channel_assets_create(
+    request: Request, slug: str, body: ChannelAssetCreate
+) -> dict[str, Any]:
+    user = current_user(request)
+    key = safe_slug(slug)
+    try:
+        mime, raw = parse_image_data_url(body.data_url)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db = await database.get_db()
+    try:
+        n = await database.count_channel_assets(db, owner_email=user.email, slug=key)
+        if n >= MAX_ASSETS_PER_CHANNEL:
+            raise HTTPException(400, f"Kanal başına en fazla {MAX_ASSETS_PER_CHANNEL} görsel")
+        asset_id = uuid.uuid4().hex
+        path = asset_path(user.email, key, asset_id)
+        path.write_bytes(raw)
+        name = (body.name or "görsel").strip()[:80] or "görsel"
+        row = await database.add_channel_asset(
+            db,
+            asset_id=asset_id,
+            owner_email=user.email,
+            slug=key,
+            name=name,
+            mime=mime,
+        )
+        return _asset_public(row, key)
+    finally:
+        await db.close()
+
+
+@app.get("/channels/{slug}/assets/{asset_id}/file")
+async def channel_assets_file(request: Request, slug: str, asset_id: str) -> FileResponse:
+    user = current_user(request)
+    key = safe_slug(slug)
+    aid = re.sub(r"[^a-fA-F0-9]", "", asset_id)
+    if len(aid) < 16:
+        raise HTTPException(404, "Görsel bulunamadı")
+    db = await database.get_db()
+    try:
+        row = await database.get_channel_asset(
+            db, owner_email=user.email, slug=key, asset_id=aid
+        )
+        if not row:
+            raise HTTPException(404, "Görsel bulunamadı")
+        path = asset_path(user.email, key, aid)
+        if not path.exists():
+            raise HTTPException(404, "Görsel dosyası yok")
+        return FileResponse(
+            path,
+            media_type=row.get("mime") or "image/png",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+    finally:
+        await db.close()
+
+
+@app.delete("/channels/{slug}/assets/{asset_id}")
+async def channel_assets_delete(request: Request, slug: str, asset_id: str) -> dict[str, bool]:
+    user = current_user(request)
+    key = safe_slug(slug)
+    aid = re.sub(r"[^a-fA-F0-9]", "", asset_id)
+    db = await database.get_db()
+    try:
+        ok = await database.delete_channel_asset(
+            db, owner_email=user.email, slug=key, asset_id=aid
+        )
+        if not ok:
+            raise HTTPException(404, "Görsel bulunamadı")
+        path = asset_path(user.email, key, aid)
+        if path.exists():
+            path.unlink()
         return {"ok": True}
     finally:
         await db.close()

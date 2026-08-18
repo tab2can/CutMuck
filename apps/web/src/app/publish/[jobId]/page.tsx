@@ -11,10 +11,12 @@ import {
   type Job,
 } from "@/lib/api";
 import { ClipPreviewPlayer } from "@/components/ClipPreviewPlayer";
+import { ThumbnailEditor } from "@/components/ThumbnailEditor";
 import { useNativeContextBlock } from "@/components/ContextMenu";
 import { useTheme } from "@/components/ThemeProvider";
 import { useToast } from "@/components/Toast";
 import { ensureNotifyPermission, notifyDesktop } from "@/lib/notify";
+import { fileToYtThumb, videoFrameToYtThumb } from "@/lib/ytThumb";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -54,6 +56,8 @@ function PublishInner() {
   const [message, setMessage] = useState<string | null>(null);
   const [ytUrl, setYtUrl] = useState<string | null>(null);
   const [thumbDataUrl, setThumbDataUrl] = useState<string | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const thumbFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     void api<Job>(`/jobs/${jobId}`).then((data) => {
@@ -115,14 +119,18 @@ function PublishInner() {
       push("Önce videoyu oynatın / yükleyin", "error");
       return;
     }
-    const canvas = document.createElement("canvas");
-    canvas.width = v.videoWidth || 1280;
-    canvas.height = v.videoHeight || 720;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
-    setThumbDataUrl(canvas.toDataURL("image/jpeg", 0.92));
+    setThumbDataUrl(videoFrameToYtThumb(v));
     push("Kare yakalandı", "ok");
+  }
+
+  async function onThumbFile(file: File) {
+    try {
+      const dataUrl = await fileToYtThumb(file);
+      setThumbDataUrl(dataUrl);
+      push("Kapak 1280×720 olarak ayarlandı", "ok");
+    } catch (e) {
+      push(e instanceof Error ? e.message : "Kapak yüklenemedi", "error");
+    }
   }
 
   async function upload() {
@@ -241,6 +249,27 @@ function PublishInner() {
           ) : (
             <span>Kapak yok</span>
           )}
+          <div className="thumb-hover">
+            <button type="button" disabled={busy} onClick={() => thumbFileRef.current?.click()}>
+              Dosya yükle
+              <span>PNG / JPEG · 16:9 otomatik</span>
+            </button>
+            <button type="button" disabled={busy} onClick={() => setEditorOpen(true)}>
+              Editör ile düzenle
+              <span>Yazı, çerçeve, görseller</span>
+            </button>
+          </div>
+          <input
+            ref={thumbFileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void onThumbFile(file);
+            }}
+          />
         </div>
         <div className="effect-row">
           <button type="button" className="btn" disabled={busy} onClick={captureFrame}>
@@ -303,6 +332,18 @@ function PublishInner() {
           </button>
         ) : null}
       </aside>
+      {editorOpen ? (
+        <ThumbnailEditor
+          channelSlug={job?.channel_slug || "_genel"}
+          baseSrc={thumbDataUrl}
+          onClose={() => setEditorOpen(false)}
+          onApply={(dataUrl) => {
+            setThumbDataUrl(dataUrl);
+            setEditorOpen(false);
+            push("Kapak güncellendi", "ok");
+          }}
+        />
+      ) : null}
     </div>
   );
 }

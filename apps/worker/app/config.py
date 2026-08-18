@@ -20,6 +20,7 @@ def _default_root() -> Path:
 ROOT = Path(os.environ["CUTMUCK_ROOT"]) if "CUTMUCK_ROOT" in os.environ else _default_root()
 DATA_DIR = Path(os.environ.get("CUTMUCK_DATA", str(ROOT / "data")))
 MEDIA_DIR = DATA_DIR / "media"
+ASSETS_DIR = DATA_DIR / "channel_assets"
 DB_PATH = DATA_DIR / "cutmuck.db"
 
 
@@ -32,6 +33,7 @@ class Settings(BaseSettings):
     web_origin: str = "http://localhost:3000"
     data_dir: Path = DATA_DIR
     media_dir: Path = MEDIA_DIR
+    assets_dir: Path = ASSETS_DIR
     db_path: Path = DB_PATH
 
     # App login (Google Sign-In) — required in production
@@ -44,4 +46,5 @@ class Settings(BaseSettings):
 settings = Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 settings.media_dir.mkdir(parents=True, exist_ok=True)
+settings.assets_dir.mkdir(parents=True, exist_ok=True)
 settings.admin_email = settings.admin_email.strip().lower()

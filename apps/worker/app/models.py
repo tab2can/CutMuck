@@ -114,6 +114,11 @@ class TimelineUpdate(BaseModel):
     overlays: list[TimelineOverlay] = Field(default_factory=list)
 
 
+class ChannelAssetCreate(BaseModel):
+    name: str = "görsel"
+    data_url: str
+
+
 class YoutubeUploadRequest(BaseModel):
     title: str
     description: str = ""

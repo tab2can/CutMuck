@@ -1,0 +1,94 @@
+export const YT_W = 1280;
+export const YT_H = 720;
+
+export async function loadImage(src: string): Promise<HTMLImageElement> {
+  let url = src;
+  if (src.startsWith("/") && !src.startsWith("//")) {
+    const path = src.startsWith("/api") ? src : `/api${src}`;
+    const res = await fetch(path, { credentials: "include", cache: "no-store" });
+    if (!res.ok) throw new Error("Görsel yüklenemedi");
+    url = URL.createObjectURL(await res.blob());
+  }
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    if (url.startsWith("http")) img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Görsel yüklenemedi"));
+    img.src = url;
+  });
+}
+
+export function fitToYtThumb(img: CanvasImageSource, iw: number, ih: number): string {
+  const canvas = document.createElement("canvas");
+  canvas.width = YT_W;
+  canvas.height = YT_H;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return canvas.toDataURL("image/jpeg", 0.92);
+  ctx.fillStyle = "#111";
+  ctx.fillRect(0, 0, YT_W, YT_H);
+  if (!iw || !ih) return canvas.toDataURL("image/jpeg", 0.92);
+  const target = YT_W / YT_H;
+  const src = iw / ih;
+  let sx = 0;
+  let sy = 0;
+  let sw = iw;
+  let sh = ih;
+  if (Math.abs(src - target) > 0.02) {
+    if (src > target) {
+      sw = ih * target;
+      sx = (iw - sw) / 2;
+    } else {
+      sh = iw / target;
+      sy = (ih - sh) / 2;
+    }
+  }
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, YT_W, YT_H);
+  return canvas.toDataURL("image/jpeg", 0.92);
+}
+
+export async function fileToYtThumb(file: File): Promise<string> {
+  if (!file.type.startsWith("image/")) throw new Error("Görsel dosyası seçin");
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await loadImage(url);
+    return fitToYtThumb(img, img.naturalWidth, img.naturalHeight);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+export function videoFrameToYtThumb(video: HTMLVideoElement): string {
+  return fitToYtThumb(
+    video,
+    video.videoWidth || YT_W,
+    video.videoHeight || YT_H
+  );
+}
+
+export function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Dosya okunamadı"));
+    reader.readAsDataURL(file);
+  });
+}
+
+export function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  const lines: string[] = [];
+  for (const raw of text.split("\n")) {
+    const words = raw.split(" ");
+    let line = "";
+    for (const word of words) {
+      const next = line ? `${line} ${word}` : word;
+      if (ctx.measureText(next).width > maxWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = next;
+      }
+    }
+    lines.push(line);
+  }
+  return lines;
+}

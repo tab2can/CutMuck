@@ -60,6 +60,17 @@ CREATE TABLE IF NOT EXISTS user_settings (
   youtube_privacy_default TEXT NOT NULL DEFAULT 'unlisted',
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS channel_assets (
+  id TEXT PRIMARY KEY,
+  owner_email TEXT NOT NULL,
+  channel_slug TEXT NOT NULL,
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_channel_assets_owner_slug
+  ON channel_assets(owner_email, channel_slug, created_at);
 """
 
 
@@ -557,6 +568,100 @@ async def list_jobs(
             data.pop("meta_json", None)
         out.append(data)
     return out
+
+
+async def list_channel_assets(
+    db: aiosqlite.Connection, *, owner_email: str, slug: str
+) -> list[dict[str, Any]]:
+    owner = owner_email.strip().lower()
+    cur = await db.execute(
+        """
+        SELECT id, owner_email, channel_slug, name, mime, created_at
+        FROM channel_assets
+        WHERE owner_email = ? AND channel_slug = ?
+        ORDER BY datetime(created_at) DESC
+        """,
+        (owner, slug),
+    )
+    return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_channel_asset(
+    db: aiosqlite.Connection, *, owner_email: str, slug: str, asset_id: str
+) -> dict[str, Any] | None:
+    owner = owner_email.strip().lower()
+    cur = await db.execute(
+        """
+        SELECT id, owner_email, channel_slug, name, mime, created_at
+        FROM channel_assets
+        WHERE id = ? AND owner_email = ? AND channel_slug = ?
+        """,
+        (asset_id, owner, slug),
+    )
+    return row_to_dict(await cur.fetchone())
+
+
+async def add_channel_asset(
+    db: aiosqlite.Connection,
+    *,
+    asset_id: str,
+    owner_email: str,
+    slug: str,
+    name: str,
+    mime: str,
+) -> dict[str, Any]:
+    owner = owner_email.strip().lower()
+    await db.execute(
+        """
+        INSERT INTO channel_assets(id, owner_email, channel_slug, name, mime)
+        VALUES(?, ?, ?, ?, ?)
+        """,
+        (asset_id, owner, slug, name, mime),
+    )
+    await db.commit()
+    row = await get_channel_asset(db, owner_email=owner, slug=slug, asset_id=asset_id)
+    return row or {
+        "id": asset_id,
+        "owner_email": owner,
+        "channel_slug": slug,
+        "name": name,
+        "mime": mime,
+    }
+
+
+async def count_channel_assets(
+    db: aiosqlite.Connection, *, owner_email: str, slug: str
+) -> int:
+    owner = owner_email.strip().lower()
+    cur = await db.execute(
+        "SELECT COUNT(*) AS n FROM channel_assets WHERE owner_email = ? AND channel_slug = ?",
+        (owner, slug),
+    )
+    row = await cur.fetchone()
+    return int(row["n"] if row else 0)
+
+
+async def delete_channel_asset(
+    db: aiosqlite.Connection, *, owner_email: str, slug: str, asset_id: str
+) -> bool:
+    owner = owner_email.strip().lower()
+    cur = await db.execute(
+        "DELETE FROM channel_assets WHERE id = ? AND owner_email = ? AND channel_slug = ?",
+        (asset_id, owner, slug),
+    )
+    await db.commit()
+    return cur.rowcount > 0
+
+
+async def delete_channel_assets_for_slug(
+    db: aiosqlite.Connection, *, owner_email: str, slug: str
+) -> None:
+    owner = owner_email.strip().lower()
+    await db.execute(
+        "DELETE FROM channel_assets WHERE owner_email = ? AND channel_slug = ?",
+        (owner, slug),
+    )
+    await db.commit()
 
 
 async def delete_job(
