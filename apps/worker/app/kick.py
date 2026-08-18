@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse
@@ -679,6 +681,74 @@ def _iso_utc(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
+_chat_lock = threading.Lock()
+_chat_pages: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_chat_cooldown_until = 0.0
+_chat_last_kick_at = 0.0
+_ctx_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+CHAT_LOOKBEHIND = 25.0
+CHAT_LOOKAHEAD = 45.0
+CHAT_LIVE_LOOKAHEAD = 8.0
+
+
+def _chat_bucket_key(channel_id: int | str, wall: float, live_edge: bool) -> str:
+    step = 5.0 if live_edge else 30.0
+    return f"{channel_id}:{int(wall // step)}:{'e' if live_edge else 'h'}"
+
+
+def _chat_cache_get(key: str) -> list[dict[str, Any]] | None:
+    row = _chat_pages.get(key)
+    if not row:
+        return None
+    expires, msgs = row
+    if expires < time.time():
+        return None
+    return list(msgs)
+
+
+def _chat_cache_covering(
+    channel_id: int | str, wall: float, live_edge: bool
+) -> list[dict[str, Any]] | None:
+    key = _chat_bucket_key(channel_id, wall, live_edge)
+    hit = _chat_cache_get(key)
+    if hit is not None:
+        return hit
+    now = time.time()
+    prefix = f"{channel_id}:"
+    for cache_key, (exp, msgs) in _chat_pages.items():
+        if exp < now or not cache_key.startswith(prefix) or not msgs:
+            continue
+        start = float(msgs[0]["ts"])
+        end = float(msgs[-1]["ts"])
+        if start - 1.0 <= wall <= end + 8.0:
+            return list(msgs)
+    return None
+
+
+def _chat_cache_stale(channel_id: int | str, wall: float, live_edge: bool) -> list[dict[str, Any]] | None:
+    key = _chat_bucket_key(channel_id, wall, live_edge)
+    row = _chat_pages.get(key)
+    if row:
+        return list(row[1])
+    prefix = f"{channel_id}:"
+    for cache_key, (_exp, msgs) in reversed(list(_chat_pages.items())):
+        if cache_key.startswith(prefix) and msgs:
+            return list(msgs)
+    return None
+
+
+def _chat_cache_put(key: str, msgs: list[dict[str, Any]], ttl: float) -> None:
+    now = time.time()
+    expired = [k for k, (exp, _) in _chat_pages.items() if exp < now]
+    for k in expired:
+        _chat_pages.pop(k, None)
+    if len(_chat_pages) > 80:
+        oldest = sorted(_chat_pages.items(), key=lambda item: item[1][0])[:20]
+        for k, _ in oldest:
+            _chat_pages.pop(k, None)
+    _chat_pages[key] = (now + ttl, list(msgs))
+
+
 def fetch_channel_message_page(
     channel_id: int | str, cursor: str | None = None
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -718,47 +788,61 @@ def fetch_chat_around(
     wall: float,
     *,
     live_edge: bool = False,
-    window_sec: float = 90.0,
-) -> list[dict[str, Any]]:
-    """Messages in [wall-window, wall] (live edge = latest page only)."""
-    window_from = wall - window_sec
-    window_to = wall + (8.0 if live_edge else 1.2)
-    cursor = None if live_edge else _iso_utc(wall + 1.5)
-    seen: set[str] = set()
-    out: list[dict[str, Any]] = []
-    prev_cursor: str | None = None
-    pages = 1 if live_edge else 8
-    for _ in range(pages):
-        raw, next_cursor = fetch_channel_message_page(channel_id, cursor)
-        if not raw:
-            break
-        oldest: float | None = None
-        hit_before = False
+    window_sec: float | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """One cached Kick page around wall clock. Never paginates. Second value is degraded."""
+    global _chat_cooldown_until, _chat_last_kick_at
+    lookbehind = CHAT_LOOKBEHIND if window_sec is None else float(window_sec)
+    lookahead = CHAT_LIVE_LOOKAHEAD if live_edge else CHAT_LOOKAHEAD
+    window_from = wall - lookbehind
+    window_to = wall + lookahead
+    key = _chat_bucket_key(channel_id, wall, live_edge)
+    ttl = 6.0 if live_edge else 180.0
+
+    with _chat_lock:
+        now = time.time()
+        if now < _chat_cooldown_until:
+            stale = _chat_cache_get(key) or _chat_cache_stale(channel_id, wall, live_edge)
+            if stale is not None:
+                return _filter_chat_window(stale, window_from, window_to), True
+            raise KickError("Kick sohbet limiti, birkaç saniye sonra tekrar denenecek")
+        cached = _chat_cache_covering(channel_id, wall, live_edge)
+        if cached is not None:
+            return _filter_chat_window(cached, window_from, window_to), False
+        wait = 0.45 - (now - _chat_last_kick_at)
+        if wait > 0:
+            time.sleep(wait)
+        cursor = None if live_edge else _iso_utc(window_to)
+        try:
+            raw, _next = fetch_channel_message_page(channel_id, cursor)
+        except KickError as exc:
+            if "403" in str(exc) or "429" in str(exc):
+                _chat_cooldown_until = time.time() + 60.0
+                stale = _chat_cache_stale(channel_id, wall, live_edge)
+                if stale is not None:
+                    return _filter_chat_window(stale, window_from, window_to), True
+            raise
+        _chat_last_kick_at = time.time()
+        page: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for item in raw:
             msg = normalize_chat_message(item)
             if not msg:
-                continue
-            ts = float(msg["ts"])
-            oldest = ts if oldest is None else min(oldest, ts)
-            if ts < window_from:
-                hit_before = True
-                continue
-            if ts > window_to:
                 continue
             mid = str(msg["id"])
             if mid in seen:
                 continue
             seen.add(mid)
-            out.append(msg)
-        if live_edge or hit_before:
-            break
-        nxt = next_cursor
-        if not nxt and oldest is not None:
-            nxt = _iso_utc(oldest)
-        if not nxt or nxt == cursor or nxt == prev_cursor:
-            break
-        prev_cursor = cursor
-        cursor = nxt
+            page.append(msg)
+        page.sort(key=lambda m: float(m["ts"]))
+        _chat_cache_put(key, page, ttl)
+        return _filter_chat_window(page, window_from, window_to), False
+
+
+def _filter_chat_window(
+    msgs: list[dict[str, Any]], window_from: float, window_to: float
+) -> list[dict[str, Any]]:
+    out = [m for m in msgs if window_from <= float(m["ts"]) <= window_to]
     out.sort(key=lambda m: float(m["ts"]))
     return out
 
@@ -782,6 +866,10 @@ def normalize_chat_message(raw: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def resolve_chat_context(slug: str, vod_uuid: str | None = None) -> dict[str, Any]:
+    cache_key = f"{slug}:{vod_uuid or ''}"
+    row = _ctx_cache.get(cache_key)
+    if row and row[0] > time.time():
+        return dict(row[1])
     ch = fetch_channel(slug)
     started_at = None
     channel_id = ch.get("id")
@@ -792,10 +880,12 @@ def resolve_chat_context(slug: str, vod_uuid: str | None = None) -> dict[str, An
             channel_id = vod.get("channel_id") or channel_id
         except KickError:
             pass
-    return {
+    result = {
         "channel_id": channel_id,
         "chatroom_id": ch.get("chatroom_id"),
         "slug": ch.get("slug") or slug,
         "started_at": started_at,
     }
+    _ctx_cache[cache_key] = (time.time() + 600.0, result)
+    return dict(result)
 

@@ -20,6 +20,9 @@ from .config import settings
 from .ffmpeg_util import FFmpegError, apply_overlays, cut_media, probe_duration
 from .kick import (
     KickError,
+    CHAT_LOOKAHEAD,
+    CHAT_LOOKBEHIND,
+    CHAT_LIVE_LOOKAHEAD,
     ensure_live_playlist,
     fetch_channel,
     fetch_chat_around,
@@ -827,15 +830,19 @@ async def jobs_chat(request: Request, job_id: str, t: float = 0) -> dict[str, An
                 raise HTTPException(400, "VOD başlangıç zamanı yok")
             wall = start + play_t
 
+        live_edge = bool(is_live and not behind)
+        lookahead = CHAT_LIVE_LOOKAHEAD if live_edge else CHAT_LOOKAHEAD
         try:
-            msgs = await asyncio.to_thread(
+            msgs, degraded = await asyncio.to_thread(
                 fetch_chat_around,
                 channel_id,
                 wall,
-                live_edge=bool(is_live and not behind),
+                live_edge=live_edge,
             )
         except KickError as exc:
-            raise HTTPException(400, str(exc)) from exc
+            detail = str(exc)
+            status = 429 if "limit" in detail.lower() or "403" in detail or "429" in detail else 400
+            raise HTTPException(status, detail) from exc
 
         out: list[dict[str, Any]] = []
         for msg in msgs:
@@ -846,6 +853,9 @@ async def jobs_chat(request: Request, job_id: str, t: float = 0) -> dict[str, An
             "behind": behind,
             "t": play_t,
             "wall_ts": wall,
+            "cover_from": round(max(0.0, play_t - CHAT_LOOKBEHIND), 2),
+            "cover_to": round(play_t + lookahead, 2),
+            "degraded": degraded,
             "messages": out[-120:],
         }
     finally:
