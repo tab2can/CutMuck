@@ -22,6 +22,7 @@ from .kick import (
     KickError,
     ensure_live_playlist,
     fetch_channel,
+    fetch_chat_around,
     fetch_clip_playback,
     fetch_clips,
     fetch_hls_bytes,
@@ -32,6 +33,7 @@ from .kick import (
     parse_vod_uuid,
     pick_media_playlist,
     playlist_duration_seconds,
+    resolve_chat_context,
 )
 from .live_buffer import ring_status, ring_window_path, start_live_ring, stop_live_ring
 from .login_auth import (
@@ -776,6 +778,76 @@ async def jobs_get(request: Request, job_id: str) -> JobOut:
                         or job
                     )
         return job_urls(job)
+    finally:
+        await db.close()
+
+
+@app.get("/jobs/{job_id}/chat")
+async def jobs_chat(request: Request, job_id: str, t: float = 0) -> dict[str, Any]:
+    """Kick chat around playback second t (VOD wall-clock or live DVR rewind)."""
+    db = await database.get_db()
+    try:
+        job = await owned_job(db, request, job_id)
+        meta = dict(job.get("meta") or {})
+        slug = job.get("channel_slug")
+        if not slug:
+            raise HTTPException(400, "Bu işte kanal yok")
+        mode = meta.get("mode")
+        is_live = mode == "live" or job.get("kind") == "live"
+        duration = max(0.0, float(meta.get("duration") or meta.get("dvr_seconds") or 0))
+        play_t = max(0.0, float(t or 0))
+
+        channel_id = meta.get("chat_channel_id")
+        started_at = meta.get("chat_started_at")
+        if not channel_id or (not is_live and not started_at):
+            ctx = await asyncio.to_thread(
+                resolve_chat_context, slug, meta.get("vod_uuid")
+            )
+            channel_id = ctx.get("channel_id") or channel_id
+            if ctx.get("started_at"):
+                started_at = ctx["started_at"]
+            meta["chat_channel_id"] = channel_id
+            meta["chatroom_id"] = ctx.get("chatroom_id")
+            if started_at:
+                meta["chat_started_at"] = started_at
+            await database.update_job(db, job_id, meta=meta)
+
+        if not channel_id:
+            raise HTTPException(400, "Kick sohbet odası bulunamadı")
+
+        now = time.time()
+        behind = False
+        if is_live:
+            lag = max(0.0, duration - play_t) if duration > 1 else 0.0
+            behind = lag > 4.0
+            wall = now - lag if behind else now
+        else:
+            start = float(started_at or 0)
+            if start <= 0:
+                raise HTTPException(400, "VOD başlangıç zamanı yok")
+            wall = start + play_t
+
+        try:
+            msgs = await asyncio.to_thread(
+                fetch_chat_around,
+                channel_id,
+                wall,
+                live_edge=bool(is_live and not behind),
+            )
+        except KickError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        out: list[dict[str, Any]] = []
+        for msg in msgs:
+            offset = play_t - (wall - float(msg["ts"]))
+            out.append({**msg, "offset_sec": round(max(0.0, offset), 2)})
+        return {
+            "live": bool(is_live),
+            "behind": behind,
+            "t": play_t,
+            "wall_ts": wall,
+            "messages": out[-120:],
+        }
     finally:
         await db.close()
 

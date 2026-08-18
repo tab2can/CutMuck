@@ -23,6 +23,7 @@ import { FX_PALETTE, FX_STACKABLE, FX_LABELS } from "@/lib/effects";
 import { ContextSurface, useNativeContextBlock } from "@/components/ContextMenu";
 import { EffectsTimeline } from "@/components/EffectsTimeline";
 import { HlsPlayer, seekHlsLiveEdge } from "@/components/HlsPlayer";
+import { KickChatPanel } from "@/components/KickChatPanel";
 import { OverlayCanvas } from "@/components/OverlayCanvas";
 import { Timeline } from "@/components/Timeline";
 import { SmoothFadeOverlay } from "@/components/SmoothFadeOverlay";
@@ -67,6 +68,7 @@ export default function EditorPage() {
   const [viewStart, setViewStart] = useState(0);
   const [loopSel, setLoopSel] = useState(false);
   const [rangeLocked, setRangeLocked] = useState(false);
+  const [sideTab, setSideTab] = useState<"fx" | "chat">("fx");
   const [overlays, setOverlays] = useState<TimelineOverlay[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [ringNote, setRingNote] = useState<string | null>(null);
@@ -1037,6 +1039,31 @@ export default function EditorPage() {
         />
 
         <aside className="editor-side">
+          <div className="editor-side-tabs">
+            <button
+              type="button"
+              className={sideTab === "fx" ? "active" : ""}
+              onClick={() => setSideTab("fx")}
+            >
+              Efektler
+            </button>
+            <button
+              type="button"
+              className={sideTab === "chat" ? "active" : ""}
+              onClick={() => setSideTab("chat")}
+            >
+              Sohbet
+            </button>
+          </div>
+          {sideTab === "chat" ? (
+            <KickChatPanel
+              jobId={jobId}
+              current={current}
+              live={isLive}
+              atLiveEdge={atLiveEdge}
+            />
+          ) : (
+            <div className="editor-side-fx">
           <div className="fx-side-palette">
             <h3>Efekt ekle</h3>
             <p className="muted fx-side-hint">
@@ -1460,6 +1487,8 @@ export default function EditorPage() {
               </div>
             )}
           </div>
+            </div>
+          )}
         </aside>
       </div>
     </div>

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 from curl_cffi import requests as cffi_requests
 
@@ -69,6 +70,8 @@ def fetch_channel(slug: str) -> dict[str, Any]:
         banner = data.get("banner_image")
     return {
         "slug": data.get("slug") or slug,
+        "id": data.get("id"),
+        "chatroom_id": (data.get("chatroom") or {}).get("id") if isinstance(data.get("chatroom"), dict) else None,
         "display_name": user.get("username") or data.get("slug") or slug,
         "avatar_url": user.get("profile_pic"),
         "banner_url": banner,
@@ -100,6 +103,13 @@ def fetch_vod_playback(uuid: str) -> dict[str, Any]:
     thumb = livestream.get("thumbnail")
     if isinstance(thumb, dict):
         thumb = thumb.get("src") or thumb.get("url")
+    channel = livestream.get("channel") if isinstance(livestream.get("channel"), dict) else {}
+    started = (
+        livestream.get("start_time")
+        or livestream.get("created_at")
+        or data.get("created_at")
+        or livestream.get("updated_at")
+    )
     return {
         "uuid": data.get("uuid") or uuid,
         "hls_url": source,
@@ -107,6 +117,8 @@ def fetch_vod_playback(uuid: str) -> dict[str, Any]:
         "title": title,
         "thumbnail": thumb or data.get("thumb"),
         "is_live": bool(livestream.get("is_live")),
+        "started_at": started,
+        "channel_id": channel.get("id") or livestream.get("channel_id") or data.get("channel_id"),
         "raw": data,
     }
 
@@ -641,4 +653,149 @@ def slice_media_playlist_range(
             body.append(_absolutize_hls_line(raw, base))
     body.append("#EXT-X-ENDLIST")
     return "\n".join(body) + "\n", first_offset
+
+
+def _parse_ts(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        raw = float(value)
+        return raw / 1000.0 if raw > 1e12 else raw
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except ValueError:
+        return None
+
+
+def _iso_utc(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def fetch_channel_message_page(
+    channel_id: int | str, cursor: str | None = None
+) -> tuple[list[dict[str, Any]], str | None]:
+    """One Kick history page (newest-first) plus the next timestamp cursor."""
+    path = f"/api/v2/channels/{channel_id}/messages"
+    if cursor:
+        path += f"?cursor={quote(cursor, safe='')}"
+    data = _get_json(path)
+    messages: list[dict[str, Any]] = []
+    next_cursor: str | None = None
+    if isinstance(data, list):
+        messages = [item for item in data if isinstance(item, dict)]
+    elif isinstance(data, dict):
+        if isinstance(data.get("cursor"), str):
+            next_cursor = data["cursor"]
+        inner = data.get("data")
+        if isinstance(inner, dict):
+            if isinstance(inner.get("cursor"), str):
+                next_cursor = inner["cursor"]
+            raw = inner.get("messages")
+            if isinstance(raw, list):
+                messages = [item for item in raw if isinstance(item, dict)]
+        elif isinstance(inner, list):
+            messages = [item for item in inner if isinstance(item, dict)]
+        elif isinstance(data.get("messages"), list):
+            messages = [item for item in data["messages"] if isinstance(item, dict)]
+    return messages, next_cursor
+
+
+def fetch_channel_messages(channel_id: int | str, cursor: str | None = None) -> list[dict[str, Any]]:
+    messages, _ = fetch_channel_message_page(channel_id, cursor)
+    return messages
+
+
+def fetch_chat_around(
+    channel_id: int | str,
+    wall: float,
+    *,
+    live_edge: bool = False,
+    window_sec: float = 90.0,
+) -> list[dict[str, Any]]:
+    """Messages in [wall-window, wall] (live edge = latest page only)."""
+    window_from = wall - window_sec
+    window_to = wall + (8.0 if live_edge else 1.2)
+    cursor = None if live_edge else _iso_utc(wall + 1.5)
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    prev_cursor: str | None = None
+    pages = 1 if live_edge else 8
+    for _ in range(pages):
+        raw, next_cursor = fetch_channel_message_page(channel_id, cursor)
+        if not raw:
+            break
+        oldest: float | None = None
+        hit_before = False
+        for item in raw:
+            msg = normalize_chat_message(item)
+            if not msg:
+                continue
+            ts = float(msg["ts"])
+            oldest = ts if oldest is None else min(oldest, ts)
+            if ts < window_from:
+                hit_before = True
+                continue
+            if ts > window_to:
+                continue
+            mid = str(msg["id"])
+            if mid in seen:
+                continue
+            seen.add(mid)
+            out.append(msg)
+        if live_edge or hit_before:
+            break
+        nxt = next_cursor
+        if not nxt and oldest is not None:
+            nxt = _iso_utc(oldest)
+        if not nxt or nxt == cursor or nxt == prev_cursor:
+            break
+        prev_cursor = cursor
+        cursor = nxt
+    out.sort(key=lambda m: float(m["ts"]))
+    return out
+
+
+def normalize_chat_message(raw: dict[str, Any]) -> dict[str, Any] | None:
+    sender = raw.get("sender") or raw.get("user") or {}
+    if not isinstance(sender, dict):
+        sender = {}
+    identity = sender.get("identity") if isinstance(sender.get("identity"), dict) else {}
+    content = str(raw.get("content") or raw.get("message") or "").strip()
+    ts = _parse_ts(raw.get("created_at") or raw.get("createdAt") or raw.get("timestamp"))
+    if not content or ts is None:
+        return None
+    return {
+        "id": str(raw.get("id") or f"{ts}:{sender.get('username')}"),
+        "user": str(sender.get("username") or sender.get("slug") or "anon"),
+        "color": str(identity.get("color") or sender.get("color") or "#53fc18"),
+        "text": content,
+        "ts": ts,
+    }
+
+
+def resolve_chat_context(slug: str, vod_uuid: str | None = None) -> dict[str, Any]:
+    ch = fetch_channel(slug)
+    started_at = None
+    channel_id = ch.get("id")
+    if vod_uuid:
+        try:
+            vod = fetch_vod_playback(str(vod_uuid))
+            started_at = _parse_ts(vod.get("started_at"))
+            channel_id = vod.get("channel_id") or channel_id
+        except KickError:
+            pass
+    return {
+        "channel_id": channel_id,
+        "chatroom_id": ch.get("chatroom_id"),
+        "slug": ch.get("slug") or slug,
+        "started_at": started_at,
+    }
 
