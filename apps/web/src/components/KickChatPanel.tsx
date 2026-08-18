@@ -120,7 +120,11 @@ export function KickChatPanel({ jobId, current, live, atLiveEdge }: Props) {
         map.clear();
         for (const msg of ordered.slice(-500)) map.set(msg.id, msg);
       }
-      addRange(next.cover_from ?? t, next.cover_to ?? t);
+      if ((next.messages || []).length === 0) {
+        addRange(t, t + 12);
+      } else {
+        addRange(next.cover_from ?? t, next.cover_to ?? t);
+      }
       stickRef.current = true;
       setAllMsgs([...map.values()].sort((a, b) => (a.offset_sec ?? 0) - (b.offset_sec ?? 0)));
       setDegraded(Boolean(next.degraded));

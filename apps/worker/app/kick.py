@@ -120,6 +120,7 @@ def fetch_vod_playback(uuid: str) -> dict[str, Any]:
         "thumbnail": thumb or data.get("thumb"),
         "is_live": bool(livestream.get("is_live")),
         "started_at": started,
+        "started_at_unix": _parse_ts(started),
         "channel_id": channel.get("id") or livestream.get("channel_id") or data.get("channel_id"),
         "raw": data,
     }
@@ -669,6 +670,8 @@ def _parse_ts(value: Any) -> float | None:
     try:
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
+        elif "T" not in text and " " in text:
+            text = text.replace(" ", "T", 1)
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
@@ -679,6 +682,11 @@ def _parse_ts(value: Any) -> float | None:
 
 def _iso_utc(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _kick_message_cursor(ts: float) -> str:
+    """Kick history cursor is epoch microseconds (ISO strings are ignored)."""
+    return str(int(float(ts) * 1_000_000))
 
 
 _chat_lock = threading.Lock()
@@ -714,9 +722,10 @@ def _chat_cache_covering(
     if hit is not None:
         return hit
     now = time.time()
+    suffix = ":e" if live_edge else ":h"
     prefix = f"{channel_id}:"
     for cache_key, (exp, msgs) in _chat_pages.items():
-        if exp < now or not cache_key.startswith(prefix) or not msgs:
+        if exp < now or not cache_key.startswith(prefix) or not cache_key.endswith(suffix) or not msgs:
             continue
         start = float(msgs[0]["ts"])
         end = float(msgs[-1]["ts"])
@@ -730,9 +739,10 @@ def _chat_cache_stale(channel_id: int | str, wall: float, live_edge: bool) -> li
     row = _chat_pages.get(key)
     if row:
         return list(row[1])
+    suffix = ":e" if live_edge else ":h"
     prefix = f"{channel_id}:"
     for cache_key, (_exp, msgs) in reversed(list(_chat_pages.items())):
-        if cache_key.startswith(prefix) and msgs:
+        if cache_key.startswith(prefix) and cache_key.endswith(suffix) and msgs:
             return list(msgs)
     return None
 
@@ -790,7 +800,7 @@ def fetch_chat_around(
     live_edge: bool = False,
     window_sec: float | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """One cached Kick page around wall clock. Never paginates. Second value is degraded."""
+    """Cached Kick messages around wall clock. History uses µs cursors (max 4 pages)."""
     global _chat_cooldown_until, _chat_last_kick_at
     lookbehind = CHAT_LOOKBEHIND if window_sec is None else float(window_sec)
     lookahead = CHAT_LIVE_LOOKAHEAD if live_edge else CHAT_LOOKAHEAD
@@ -812,9 +822,37 @@ def fetch_chat_around(
         wait = 0.45 - (now - _chat_last_kick_at)
         if wait > 0:
             time.sleep(wait)
-        cursor = None if live_edge else _iso_utc(window_to)
+        cursor = None if live_edge else _kick_message_cursor(window_to)
+        page: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        pages = 1 if live_edge else 4
         try:
-            raw, _next = fetch_channel_message_page(channel_id, cursor)
+            for page_i in range(pages):
+                if page_i:
+                    wait = 0.35 - (time.time() - _chat_last_kick_at)
+                    if wait > 0:
+                        time.sleep(wait)
+                raw, next_cursor = fetch_channel_message_page(channel_id, cursor)
+                _chat_last_kick_at = time.time()
+                oldest: float | None = None
+                for item in raw:
+                    msg = normalize_chat_message(item)
+                    if not msg:
+                        continue
+                    ts = float(msg["ts"])
+                    oldest = ts if oldest is None else min(oldest, ts)
+                    mid = str(msg["id"])
+                    if mid in seen:
+                        continue
+                    seen.add(mid)
+                    page.append(msg)
+                if live_edge:
+                    break
+                if oldest is not None and oldest < window_from:
+                    break
+                if not next_cursor or str(next_cursor) == str(cursor):
+                    break
+                cursor = str(next_cursor)
         except KickError as exc:
             if "403" in str(exc) or "429" in str(exc):
                 _chat_cooldown_until = time.time() + 60.0
@@ -822,18 +860,6 @@ def fetch_chat_around(
                 if stale is not None:
                     return _filter_chat_window(stale, window_from, window_to), True
             raise
-        _chat_last_kick_at = time.time()
-        page: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for item in raw:
-            msg = normalize_chat_message(item)
-            if not msg:
-                continue
-            mid = str(msg["id"])
-            if mid in seen:
-                continue
-            seen.add(mid)
-            page.append(msg)
         page.sort(key=lambda m: float(m["ts"]))
         _chat_cache_put(key, page, ttl)
         return _filter_chat_window(page, window_from, window_to), False

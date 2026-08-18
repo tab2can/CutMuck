@@ -20,9 +20,6 @@ from .config import settings
 from .ffmpeg_util import FFmpegError, apply_overlays, cut_media, probe_duration
 from .kick import (
     KickError,
-    CHAT_LOOKAHEAD,
-    CHAT_LOOKBEHIND,
-    CHAT_LIVE_LOOKAHEAD,
     ensure_live_playlist,
     fetch_channel,
     fetch_chat_around,
@@ -603,6 +600,8 @@ async def jobs_open(request: Request, body: DownloadRequest) -> JobOut:
     source_url = body.vod_url
     channel_slug = body.channel_slug
     mode = "remote-hls"
+    chat_started_at = None
+    chat_channel_id = None
 
     try:
         if kind == "clip":
@@ -652,6 +651,8 @@ async def jobs_open(request: Request, body: DownloadRequest) -> JobOut:
                     duration = playback["duration"] or duration
                     title = body.title or playback["title"] or title
                     thumbnail = thumbnail or playback.get("thumbnail")
+                    chat_started_at = playback.get("started_at_unix")
+                    chat_channel_id = playback.get("channel_id")
             elif body.vod_url.endswith(".m3u8"):
                 hls_url = body.vod_url
     except KickError as exc:
@@ -684,6 +685,8 @@ async def jobs_open(request: Request, body: DownloadRequest) -> JobOut:
                     "mode": mode,
                     "is_live": mode == "live",
                     "dvr": bool((live_playback or {}).get("dvr")),
+                    "chat_started_at": chat_started_at,
+                    "chat_channel_id": chat_channel_id,
                     "overlays": [],
                 },
             },
@@ -831,7 +834,6 @@ async def jobs_chat(request: Request, job_id: str, t: float = 0) -> dict[str, An
             wall = start + play_t
 
         live_edge = bool(is_live and not behind)
-        lookahead = CHAT_LIVE_LOOKAHEAD if live_edge else CHAT_LOOKAHEAD
         try:
             msgs, degraded = await asyncio.to_thread(
                 fetch_chat_around,
@@ -848,13 +850,20 @@ async def jobs_chat(request: Request, job_id: str, t: float = 0) -> dict[str, An
         for msg in msgs:
             offset = play_t - (wall - float(msg["ts"]))
             out.append({**msg, "offset_sec": round(max(0.0, offset), 2)})
+        if out:
+            offsets = [float(m["offset_sec"]) for m in out]
+            cover_from = round(max(0.0, min(offsets)), 2)
+            cover_to = round(max(max(offsets), play_t + 8.0), 2)
+        else:
+            cover_from = round(play_t, 2)
+            cover_to = round(play_t + (8.0 if live_edge else 12.0), 2)
         return {
             "live": bool(is_live),
             "behind": behind,
             "t": play_t,
             "wall_ts": wall,
-            "cover_from": round(max(0.0, play_t - CHAT_LOOKBEHIND), 2),
-            "cover_to": round(play_t + lookahead, 2),
+            "cover_from": cover_from,
+            "cover_to": cover_to,
             "degraded": degraded,
             "messages": out[-120:],
         }
