@@ -755,8 +755,9 @@ a {
   min-height: 0;
   height: 100%;
   overflow: hidden;
-  --player-max-h-user: var(--player-max-h, min(52vh, 560px));
 }
+
+.editor-main {
 
 .editor-main {
   display: flex;
@@ -775,10 +776,11 @@ a {
   flex: 0 0 auto;
   width: 100%;
   align-items: stretch;
+  position: relative;
 }
 
 .player-chrome:not(.tab-fs) {
-  --player-max-h: var(--player-max-h-user, min(52vh, 560px));
+  --player-max-h: var(--editor-player-h, min(52vh, 560px));
 }
 
 .player-stage {
@@ -828,6 +830,10 @@ a {
 .player-chrome.show-controls .player-controls-overlay {
   opacity: 1;
   transform: translateY(0);
+  pointer-events: auto;
+}
+
+.player-controls-overlay .pc-controls {
   pointer-events: auto;
 }
 
@@ -965,67 +971,99 @@ a {
   position: relative;
   touch-action: none;
   user-select: none;
+  z-index: 6;
 }
 
-.split-handle.horizontal {
-  height: 10px;
+.split-handle.split-horizontal {
+  height: 14px;
   cursor: row-resize;
-  margin: 2px 10px;
+  margin: 2px 8px;
 }
 
-.split-handle.horizontal::after {
+.split-handle.split-horizontal::before {
   content: "";
   position: absolute;
-  left: 16%;
-  right: 16%;
-  top: 50%;
-  height: 3px;
-  transform: translateY(-50%);
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--border) 70%, var(--accent));
-  opacity: 0.55;
-  transition:
-    opacity 0.15s ease,
-    background 0.15s ease;
+  inset: -8px 0;
 }
 
-.split-handle.horizontal:hover::after,
-.split-handle.horizontal:active::after {
+.split-handle.split-horizontal::after {
+  content: "";
+  position: absolute;
+  left: 22%;
+  right: 22%;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--border) 55%, var(--accent));
+  opacity: 0.7;
+  pointer-events: none;
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease,
+    width 0.15s ease;
+}
+
+.split-handle.split-horizontal:hover::after,
+.split-handle.split-horizontal:active::after {
   opacity: 1;
   background: var(--accent);
 }
 
-.split-handle.vertical {
-  width: 10px;
+.split-handle.split-vertical {
+  width: 14px;
   cursor: col-resize;
-  margin: 0 1px;
+  margin: 0;
   align-self: stretch;
+  flex: 0 0 14px;
 }
 
-.split-handle.vertical::after {
+.split-handle.split-vertical::before {
   content: "";
   position: absolute;
-  top: 16%;
-  bottom: 16%;
+  inset: 0 -8px;
+}
+
+.split-handle.split-vertical::after {
+  content: "";
+  position: absolute;
+  top: 18%;
+  bottom: 18%;
   left: 50%;
-  width: 3px;
+  width: 4px;
   transform: translateX(-50%);
   border-radius: 999px;
-  background: color-mix(in oklab, var(--border) 70%, var(--accent));
-  opacity: 0.55;
+  background: color-mix(in oklab, var(--border) 55%, var(--accent));
+  opacity: 0.7;
+  pointer-events: none;
   transition:
     opacity 0.15s ease,
     background 0.15s ease;
 }
 
-.split-handle.vertical:hover::after,
-.split-handle.vertical:active::after {
+.split-handle.split-vertical:hover::after,
+.split-handle.split-vertical:active::after {
   opacity: 1;
   background: var(--accent);
 }
 
 .split-handle.dock-split {
-  margin-inline: 4px;
+  margin-inline: 2px;
+}
+
+body.is-resizing-panels[data-panel-resize="horizontal"] {
+  cursor: row-resize;
+  user-select: none;
+}
+
+body.is-resizing-panels[data-panel-resize="vertical"] {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.is-resizing-panels * {
+  cursor: inherit !important;
+  user-select: none !important;
 }
 
 .transport {
@@ -2355,7 +2393,7 @@ a {
     overflow: auto;
   }
 
-  .editor-body > .split-handle.vertical {
+  .editor-body > .split-handle.split-vertical {
     display: none;
   }
 

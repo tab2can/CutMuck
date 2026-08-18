@@ -344,7 +344,15 @@ export default function EditorPage() {
     }, 280);
   }
 
+  function isPlayerUi(target: EventTarget | null) {
+    return (
+      target instanceof Element &&
+      !!target.closest(".player-controls-overlay, .pc-controls, .tab-fs-exit")
+    );
+  }
+
   function onStageClick(e: ReactMouseEvent) {
+    if (isPlayerUi(e.target)) return;
     if (e.detail > 1) return;
     if (suppressClickRef.current || boostingRef.current) return;
     clearClickTimer();
@@ -355,6 +363,7 @@ export default function EditorPage() {
   }
 
   function onStageDblClick(e: ReactMouseEvent) {
+    if (isPlayerUi(e.target)) return;
     e.preventDefault();
     clearClickTimer();
     clearHoldTimer();
@@ -363,6 +372,7 @@ export default function EditorPage() {
 
   function onStagePointerDown(e: ReactPointerEvent) {
     if (e.button !== 0) return;
+    if (isPlayerUi(e.target)) return;
     clearHoldTimer();
     holdTimerRef.current = window.setTimeout(() => {
       holdTimerRef.current = null;
@@ -681,7 +691,7 @@ export default function EditorPage() {
         style={
           {
             "--editor-side-w": `${layout.sideW}px`,
-            "--player-max-h": `${layout.playerH}px`,
+            "--editor-player-h": `${layout.playerH}px`,
           } as CSSProperties
         }
       >
@@ -816,7 +826,14 @@ export default function EditorPage() {
               )}
               {buffering && src ? <div className="player-buffering">Yükleniyor…</div> : null}
 
-              <div className="player-controls-overlay">
+              <div
+                className="player-controls-overlay"
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
                 <VideoControls
                   current={current}
                   duration={timelineDur}
@@ -849,10 +866,11 @@ export default function EditorPage() {
           {!tabFs ? (
             <SplitHandle
               orientation="horizontal"
+              label="Video yüksekliği"
               onDelta={(dy) =>
                 setLayout((prev) => ({
                   ...prev,
-                  playerH: Math.min(760, Math.max(200, prev.playerH + dy)),
+                  playerH: Math.min(720, Math.max(220, prev.playerH + dy)),
                 }))
               }
               onDragEnd={persistLayout}
@@ -951,10 +969,11 @@ export default function EditorPage() {
             <SplitHandle
               orientation="horizontal"
               className="dock-split"
+              label="Klip timeline yüksekliği"
               onDelta={(dy) =>
                 setLayout((prev) => ({
                   ...prev,
-                  clipTimelineH: Math.min(440, Math.max(72, prev.clipTimelineH + dy)),
+                  clipTimelineH: Math.min(320, Math.max(88, prev.clipTimelineH + dy)),
                 }))
               }
               onDragEnd={persistLayout}
@@ -986,10 +1005,11 @@ export default function EditorPage() {
 
         <SplitHandle
           orientation="vertical"
+          label="Sağ panel genişliği"
           onDelta={(dx) =>
             setLayout((prev) => ({
               ...prev,
-              sideW: Math.min(760, Math.max(320, prev.sideW - dx)),
+              sideW: Math.min(640, Math.max(340, prev.sideW - dx)),
             }))
           }
           onDragEnd={persistLayout}

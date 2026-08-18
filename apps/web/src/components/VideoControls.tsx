@@ -127,6 +127,9 @@ export function VideoControls({
       className={`pc-controls ${overlay ? "overlay" : ""} ${disabled ? "disabled" : ""} ${live ? "is-live" : ""}`}
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
     >
       <div className="pc-scrub" onClick={onBarClick} role="slider" aria-valuenow={current}>
         <div className="pc-scrub-track">

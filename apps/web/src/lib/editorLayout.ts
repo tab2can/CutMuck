@@ -23,12 +23,12 @@ export function readEditorLayout(): EditorLayout {
     if (!raw) return DEFAULT_EDITOR_LAYOUT;
     const parsed = JSON.parse(raw) as Partial<EditorLayout>;
     return {
-      playerH: clamp(Number(parsed.playerH) || DEFAULT_EDITOR_LAYOUT.playerH, 200, 760),
-      sideW: clamp(Number(parsed.sideW) || DEFAULT_EDITOR_LAYOUT.sideW, 320, 760),
+      playerH: clamp(Number(parsed.playerH) || DEFAULT_EDITOR_LAYOUT.playerH, 220, 720),
+      sideW: clamp(Number(parsed.sideW) || DEFAULT_EDITOR_LAYOUT.sideW, 340, 640),
       clipTimelineH: clamp(
         Number(parsed.clipTimelineH) || DEFAULT_EDITOR_LAYOUT.clipTimelineH,
-        72,
-        440
+        88,
+        320
       ),
     };
   } catch {
