@@ -23,11 +23,11 @@ type ChatPayload = {
   messages: ChatMsg[];
 };
 
-const DISPLAY_BEHIND = 90;
-const PREFETCH_MARGIN = 12;
-const MIN_FETCH_GAP_MS = 3500;
-const LIVE_POLL_MS = 7000;
-const SEEK_DEBOUNCE_MS = 500;
+const DISPLAY_MAX = 120;
+const PREFETCH_MARGIN = 0.8;
+const MIN_FETCH_GAP_MS = 2500;
+const LIVE_POLL_MS = 5000;
+const SEEK_DEBOUNCE_MS = 450;
 const BACKOFF_MS = 25000;
 
 function ChatBody({ text }: { text: string }) {
@@ -88,7 +88,7 @@ export function KickChatPanel({ jobId, current, live, atLiveEdge }: Props) {
     const merged: { from: number; to: number }[] = [];
     for (const r of next) {
       const last = merged[merged.length - 1];
-      if (last && r.from <= last.to + 8) last.to = Math.max(last.to, r.to);
+      if (last && r.from <= last.to + 2) last.to = Math.max(last.to, r.to);
       else merged.push({ ...r });
     }
     coverRef.current = merged;
@@ -121,7 +121,7 @@ export function KickChatPanel({ jobId, current, live, atLiveEdge }: Props) {
         for (const msg of ordered.slice(-500)) map.set(msg.id, msg);
       }
       if ((next.messages || []).length === 0) {
-        addRange(t, t + 12);
+        addRange(t, t + 3);
       } else {
         addRange(next.cover_from ?? t, next.cover_to ?? t);
       }
@@ -170,11 +170,8 @@ export function KickChatPanel({ jobId, current, live, atLiveEdge }: Props) {
   }, [current]);
 
   const visible = useMemo(() => {
-    const lo = current - DISPLAY_BEHIND;
-    return allMsgs.filter((m) => {
-      const offset = m.offset_sec ?? 0;
-      return offset <= current + 0.2 && offset >= lo;
-    });
+    const ready = allMsgs.filter((m) => (m.offset_sec ?? 0) <= current + 0.35);
+    return ready.slice(-DISPLAY_MAX);
   }, [allMsgs, current]);
 
   useEffect(() => {

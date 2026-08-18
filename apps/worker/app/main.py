@@ -853,10 +853,10 @@ async def jobs_chat(request: Request, job_id: str, t: float = 0) -> dict[str, An
         if out:
             offsets = [float(m["offset_sec"]) for m in out]
             cover_from = round(max(0.0, min(offsets)), 2)
-            cover_to = round(max(max(offsets), play_t + 8.0), 2)
+            cover_to = round(max(offsets), 2)
         else:
             cover_from = round(play_t, 2)
-            cover_to = round(play_t + (8.0 if live_edge else 12.0), 2)
+            cover_to = round(play_t + 3.0, 2)
         return {
             "live": bool(is_live),
             "behind": behind,

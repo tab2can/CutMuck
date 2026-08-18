@@ -694,13 +694,15 @@ _chat_pages: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _chat_cooldown_until = 0.0
 _chat_last_kick_at = 0.0
 _ctx_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-CHAT_LOOKBEHIND = 25.0
-CHAT_LOOKAHEAD = 45.0
-CHAT_LIVE_LOOKAHEAD = 8.0
+CHAT_LOOKBEHIND = 120.0
+CHAT_LOOKAHEAD = 1.5
+CHAT_LIVE_LOOKAHEAD = 2.0
+CHAT_TARGET_MSGS = 100
+CHAT_MAX_PAGES = 6
 
 
 def _chat_bucket_key(channel_id: int | str, wall: float, live_edge: bool) -> str:
-    step = 5.0 if live_edge else 30.0
+    step = 4.0 if live_edge else 3.0
     return f"{channel_id}:{int(wall // step)}:{'e' if live_edge else 'h'}"
 
 
@@ -714,22 +716,28 @@ def _chat_cache_get(key: str) -> list[dict[str, Any]] | None:
     return list(msgs)
 
 
+def _msgs_cover_wall(msgs: list[dict[str, Any]], wall: float) -> bool:
+    if not msgs:
+        return False
+    start = float(msgs[0]["ts"])
+    end = float(msgs[-1]["ts"])
+    return start - 1.0 <= wall <= end + 2.0
+
+
 def _chat_cache_covering(
     channel_id: int | str, wall: float, live_edge: bool
 ) -> list[dict[str, Any]] | None:
     key = _chat_bucket_key(channel_id, wall, live_edge)
     hit = _chat_cache_get(key)
-    if hit is not None:
+    if hit is not None and _msgs_cover_wall(hit, wall):
         return hit
     now = time.time()
     suffix = ":e" if live_edge else ":h"
     prefix = f"{channel_id}:"
     for cache_key, (exp, msgs) in _chat_pages.items():
-        if exp < now or not cache_key.startswith(prefix) or not cache_key.endswith(suffix) or not msgs:
+        if exp < now or not cache_key.startswith(prefix) or not cache_key.endswith(suffix):
             continue
-        start = float(msgs[0]["ts"])
-        end = float(msgs[-1]["ts"])
-        if start - 1.0 <= wall <= end + 8.0:
+        if _msgs_cover_wall(msgs, wall):
             return list(msgs)
     return None
 
@@ -800,7 +808,7 @@ def fetch_chat_around(
     live_edge: bool = False,
     window_sec: float | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Cached Kick messages around wall clock. History uses µs cursors (max 4 pages)."""
+    """Messages ending at wall. Cursor sits just ahead of playhead so busy chat is not skipped."""
     global _chat_cooldown_until, _chat_last_kick_at
     lookbehind = CHAT_LOOKBEHIND if window_sec is None else float(window_sec)
     lookahead = CHAT_LIVE_LOOKAHEAD if live_edge else CHAT_LOOKAHEAD
@@ -814,22 +822,23 @@ def fetch_chat_around(
         if now < _chat_cooldown_until:
             stale = _chat_cache_get(key) or _chat_cache_stale(channel_id, wall, live_edge)
             if stale is not None:
-                return _filter_chat_window(stale, window_from, window_to), True
+                return _filter_chat_window(stale, window_from, window_to)[-CHAT_TARGET_MSGS:], True
             raise KickError("Kick sohbet limiti, birkaç saniye sonra tekrar denenecek")
         cached = _chat_cache_covering(channel_id, wall, live_edge)
         if cached is not None:
-            return _filter_chat_window(cached, window_from, window_to), False
-        wait = 0.45 - (now - _chat_last_kick_at)
+            return _filter_chat_window(cached, window_from, window_to)[-CHAT_TARGET_MSGS:], False
+        wait = 0.4 - (now - _chat_last_kick_at)
         if wait > 0:
             time.sleep(wait)
         cursor = None if live_edge else _kick_message_cursor(window_to)
         page: list[dict[str, Any]] = []
         seen: set[str] = set()
-        pages = 1 if live_edge else 4
+        pages = 2 if live_edge else CHAT_MAX_PAGES
+        target = 50 if live_edge else CHAT_TARGET_MSGS
         try:
             for page_i in range(pages):
                 if page_i:
-                    wait = 0.35 - (time.time() - _chat_last_kick_at)
+                    wait = 0.18 - (time.time() - _chat_last_kick_at)
                     if wait > 0:
                         time.sleep(wait)
                 raw, next_cursor = fetch_channel_message_page(channel_id, cursor)
@@ -846,7 +855,8 @@ def fetch_chat_around(
                         continue
                     seen.add(mid)
                     page.append(msg)
-                if live_edge:
+                in_view = sum(1 for m in page if window_from <= float(m["ts"]) <= window_to)
+                if in_view >= target:
                     break
                 if oldest is not None and oldest < window_from:
                     break
@@ -858,11 +868,11 @@ def fetch_chat_around(
                 _chat_cooldown_until = time.time() + 60.0
                 stale = _chat_cache_stale(channel_id, wall, live_edge)
                 if stale is not None:
-                    return _filter_chat_window(stale, window_from, window_to), True
+                    return _filter_chat_window(stale, window_from, window_to)[-CHAT_TARGET_MSGS:], True
             raise
         page.sort(key=lambda m: float(m["ts"]))
         _chat_cache_put(key, page, ttl)
-        return _filter_chat_window(page, window_from, window_to), False
+        return _filter_chat_window(page, window_from, window_to)[-CHAT_TARGET_MSGS:], False
 
 
 def _filter_chat_window(
