@@ -16,7 +16,7 @@ export function InstallPwaButton() {
     if (typeof window === "undefined") return;
 
     if ("serviceWorker" in navigator) {
-      void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+      void navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).catch(() => undefined);
     }
 
     const standalone =

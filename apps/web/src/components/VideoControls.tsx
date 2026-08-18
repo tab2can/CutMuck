@@ -1,7 +1,8 @@
 "use client";
 
+import Hls from "hls.js";
 import { formatDuration } from "@/lib/api";
-import type { MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 
 type Props = {
   current: number;
@@ -16,6 +17,7 @@ type Props = {
   atLiveEdge?: boolean;
   expanded?: boolean;
   overlay?: boolean;
+  previewSrc?: string | null;
   onTogglePlay: () => void;
   onSeek: (time: number) => void;
   onSkip: (delta: number) => void;
@@ -103,6 +105,7 @@ export function VideoControls({
   atLiveEdge = true,
   expanded,
   overlay,
+  previewSrc,
   onTogglePlay,
   onSeek,
   onSkip,
@@ -114,12 +117,100 @@ export function VideoControls({
 }: Props) {
   const span = Math.max(duration, live ? current : 0, 0);
   const progress = span > 0 ? Math.min(100, (current / span) * 100) : 0;
+  const previewRef = useRef<HTMLVideoElement>(null);
+  const previewHls = useRef<Hls | null>(null);
+  const wantedTime = useRef(0);
+  const seeking = useRef(false);
+  const [hover, setHover] = useState<{ pct: number; tipPct: number; time: number } | null>(null);
+
+  useEffect(() => {
+    const video = previewRef.current;
+    const src = previewSrc;
+    if (!video || !src) return;
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        maxBufferLength: 8,
+        maxMaxBufferLength: 16,
+        maxBufferSize: 8 * 1000 * 1000,
+        capLevelToPlayerSize: true,
+        startLevel: 0,
+        autoStartLoad: true,
+        testBandwidth: false,
+      });
+      previewHls.current = hls;
+      hls.loadSource(src);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (hls.levels.length > 0) hls.currentLevel = 0;
+      });
+      return () => {
+        previewHls.current = null;
+        hls.destroy();
+      };
+    }
+
+    video.src = src;
+    return () => {
+      video.removeAttribute("src");
+      video.load();
+    };
+  }, [previewSrc]);
+
+  useEffect(() => {
+    const video = previewRef.current;
+    if (!video) return;
+    const onSeeked = () => {
+      seeking.current = false;
+      if (Math.abs(wantedTime.current - video.currentTime) > 0.35) {
+        seeking.current = true;
+        try {
+          video.currentTime = wantedTime.current;
+        } catch {
+          seeking.current = false;
+        }
+      }
+    };
+    video.addEventListener("seeked", onSeeked);
+    return () => video.removeEventListener("seeked", onSeeked);
+  }, [previewSrc]);
+
+  function timeFromEvent(e: MouseEvent<HTMLDivElement> | PointerEvent<HTMLDivElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = span > 0 ? Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)) : 0;
+    return { pct: ratio * 100, time: ratio * span, width: rect.width };
+  }
+
+  function seekPreview(time: number) {
+    wantedTime.current = time;
+    const video = previewRef.current;
+    if (!video || video.readyState < 1) return;
+    if (seeking.current) return;
+    seeking.current = true;
+    try {
+      video.currentTime = time;
+    } catch {
+      seeking.current = false;
+    }
+  }
 
   function onBarClick(e: MouseEvent<HTMLDivElement>) {
     if (!span || disabled) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    onSeek(ratio * span);
+    onSeek(timeFromEvent(e).time);
+  }
+
+  function onBarMove(e: PointerEvent<HTMLDivElement>) {
+    if (!span || disabled) return;
+    const next = timeFromEvent(e);
+    const pad = next.width > 0 ? (92 / next.width) * 100 : 10;
+    setHover({
+      pct: next.pct,
+      tipPct: Math.min(100 - pad, Math.max(pad, next.pct)),
+      time: next.time,
+    });
+    seekPreview(next.time);
   }
 
   return (
@@ -131,10 +222,35 @@ export function VideoControls({
       onPointerUp={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <div className="pc-scrub" onClick={onBarClick} role="slider" aria-valuenow={current}>
+      <div
+        className="pc-scrub"
+        onClick={onBarClick}
+        onPointerMove={onBarMove}
+        onPointerLeave={() => setHover(null)}
+        role="slider"
+        aria-valuenow={current}
+      >
+        <div
+          className={`pc-hover-preview ${hover ? "show" : ""}`}
+          style={{ left: `${hover?.tipPct ?? 0}%` }}
+        >
+          <div className="pc-hover-frame">
+            <video
+              ref={previewRef}
+              className="pc-hover-video"
+              muted
+              playsInline
+              preload="auto"
+            />
+          </div>
+          <span className="pc-hover-time">
+            {formatDuration(hover?.time ?? 0)}
+          </span>
+        </div>
         <div className="pc-scrub-track">
           <div className="pc-scrub-fill" style={{ width: `${progress}%` }} />
           <div className="pc-scrub-thumb" style={{ left: `${progress}%` }} />
+          {hover ? <div className="pc-scrub-hover" style={{ left: `${hover.pct}%` }} /> : null}
         </div>
       </div>
 

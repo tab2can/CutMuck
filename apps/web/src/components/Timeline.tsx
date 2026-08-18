@@ -16,6 +16,7 @@ type Props = {
   onSeek: (t: number) => void;
   onInChange: (t: number) => void;
   onOutChange: (t: number) => void;
+  rangeLocked?: boolean;
 };
 
 const SNAP_PX = 14;
@@ -33,6 +34,7 @@ export function Timeline({
   onSeek,
   onInChange,
   onOutChange,
+  rangeLocked = false,
 }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -104,6 +106,7 @@ export function Timeline({
   function startDrag(kind: "in" | "out" | "play", e: ReactMouseEvent) {
     e.preventDefault();
     e.stopPropagation();
+    if (rangeLocked && (kind === "in" || kind === "out")) return;
     const move = (ev: MouseEvent) => {
       let t = snap(fromClientX(ev.clientX), ev.ctrlKey || ev.metaKey);
       if (kind === "in") {
@@ -169,7 +172,7 @@ export function Timeline({
         <span className="timeline-row-label">Kesit</span>
         <div
           ref={trackRef}
-          className="timeline-track pro"
+          className={`timeline-track pro ${rangeLocked ? "range-locked" : ""}`}
           onClick={onTrackClick}
           onPointerMove={(e) => setHoverT(fromClientX(e.clientX))}
           onPointerLeave={() => setHoverT(null)}
@@ -184,13 +187,13 @@ export function Timeline({
                 }}
               />
               <div
-                className="timeline-handle in"
+                className={`timeline-handle in ${rangeLocked ? "locked" : ""}`}
                 data-handle="in"
                 style={{ left: `${toX(inPoint)}%` }}
                 onMouseDown={(e) => startDrag("in", e)}
               />
               <div
-                className="timeline-handle out"
+                className={`timeline-handle out ${rangeLocked ? "locked" : ""}`}
                 data-handle="out"
                 style={{ left: `${toX(outPoint)}%` }}
                 onMouseDown={(e) => startDrag("out", e)}

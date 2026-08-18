@@ -3,6 +3,7 @@ import { Outfit, Sora } from "next/font/google";
 import "./globals.css";
 import { AuthGate } from "@/components/AuthGate";
 import { AuthProvider } from "@/components/AuthProvider";
+import { ClientBoot } from "@/components/ClientBoot";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ToastProvider } from "@/components/Toast";
 
@@ -46,6 +47,7 @@ export default function RootLayout({
         />
       </head>
       <body className={`${outfit.variable} ${sora.variable}`}>
+        <ClientBoot />
         <AuthProvider>
           <AuthGate>
             <ThemeProvider>

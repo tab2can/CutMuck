@@ -66,6 +66,7 @@ export default function EditorPage() {
   const [zoom, setZoom] = useState(1);
   const [viewStart, setViewStart] = useState(0);
   const [loopSel, setLoopSel] = useState(false);
+  const [rangeLocked, setRangeLocked] = useState(false);
   const [overlays, setOverlays] = useState<TimelineOverlay[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [ringNote, setRingNote] = useState<string | null>(null);
@@ -471,10 +472,10 @@ export default function EditorPage() {
       if (e.key === " " || e.code === "Space") {
         e.preventDefault();
         togglePlay();
-      } else if (e.key === "i" || e.key === "I") {
+      } else if ((e.key === "i" || e.key === "I") && !rangeLocked) {
         setRangeTouched(true);
         setInPoint(current);
-      } else if (e.key === "o" || e.key === "O") {
+      } else if ((e.key === "o" || e.key === "O") && !rangeLocked) {
         setRangeTouched(true);
         setOutPoint(current || duration);
       } else if (e.key === "j" || e.key === "J") {
@@ -501,7 +502,7 @@ export default function EditorPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [current, duration, inPoint, outPoint, playing, isLive, selectedId, tabFs]);
+  }, [current, duration, inPoint, outPoint, playing, isLive, selectedId, tabFs, rangeLocked]);
 
   const overlaysRef = useRef(overlays);
   overlaysRef.current = overlays;
@@ -732,13 +733,12 @@ export default function EditorPage() {
                       if (d && Number.isFinite(d) && d > 0 && d < 1e7) {
                         setDuration((prev) => Math.max(prev, d));
                         if (isLive) {
-                          // Set In/Out once from first known DVR length; keep Out fixed after that
-                          if (!liveRangeInitRef.current && !rangeTouched) {
+                          if (!liveRangeInitRef.current && !rangeTouched && !rangeLocked) {
                             liveRangeInitRef.current = true;
                             setOutPoint(d);
                             setInPoint(Math.max(0, d - 30));
                           }
-                        } else if (!rangeTouched) {
+                        } else if (!rangeTouched && !rangeLocked) {
                           setOutPoint(Math.min(d, 60));
                         }
                       }
@@ -847,6 +847,7 @@ export default function EditorPage() {
                   expanded={tabFs}
                   overlay
                   disabled={!ready || !src}
+                  previewSrc={src}
                   onTogglePlay={togglePlay}
                   onSeek={seekTo}
                   onSkip={(d) => seekTo(current + d)}
@@ -882,8 +883,10 @@ export default function EditorPage() {
               <button
                 type="button"
                 className="btn"
-                disabled={!ready}
+                disabled={!ready || rangeLocked}
+                title={rangeLocked ? "In/Out kilitli" : "In noktasını buraya al"}
                 onClick={() => {
+                  if (rangeLocked) return;
                   setRangeTouched(true);
                   setInPoint(current);
                 }}
@@ -893,8 +896,10 @@ export default function EditorPage() {
               <button
                 type="button"
                 className="btn"
-                disabled={!ready}
+                disabled={!ready || rangeLocked}
+                title={rangeLocked ? "In/Out kilitli" : "Out noktasını buraya al"}
                 onClick={() => {
+                  if (rangeLocked) return;
                   setRangeTouched(true);
                   setOutPoint(current || duration);
                 }}
@@ -919,6 +924,15 @@ export default function EditorPage() {
                   Loop
                 </button>
               )}
+              <button
+                type="button"
+                className={`btn ${rangeLocked ? "primary" : ""}`}
+                disabled={!ready}
+                title={rangeLocked ? "In/Out kilidini aç" : "In/Out kilitle"}
+                onClick={() => setRangeLocked((v) => !v)}
+              >
+                {rangeLocked ? "Kilitli" : "Kilitle"}
+              </button>
               {ringNote ? <span className="muted">{ringNote}</span> : null}
             </div>
 
@@ -929,7 +943,9 @@ export default function EditorPage() {
                 {
                   id: "in",
                   label: "In buraya",
+                  disabled: rangeLocked,
                   onSelect: () => {
+                    if (rangeLocked) return;
                     setRangeTouched(true);
                     setInPoint(current);
                   },
@@ -937,7 +953,9 @@ export default function EditorPage() {
                 {
                   id: "out",
                   label: "Out buraya",
+                  disabled: rangeLocked,
                   onSelect: () => {
+                    if (rangeLocked) return;
                     setRangeTouched(true);
                     setOutPoint(current);
                   },
@@ -955,13 +973,16 @@ export default function EditorPage() {
                 onViewStart={setViewStart}
                 onSeek={seekTo}
                 onInChange={(t) => {
+                  if (rangeLocked) return;
                   setRangeTouched(true);
                   setInPoint(t);
                 }}
                 onOutChange={(t) => {
+                  if (rangeLocked) return;
                   setRangeTouched(true);
                   setOutPoint(t);
                 }}
+                rangeLocked={rangeLocked}
               />
             </ContextSurface>
             </div>
