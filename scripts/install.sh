@@ -152,9 +152,10 @@ compose_up() {
   export COMPOSE_HTTP_TIMEOUT="${COMPOSE_HTTP_TIMEOUT:-180}"
   export DOCKER_CLIENT_TIMEOUT="${DOCKER_CLIENT_TIMEOUT:-180}"
   if ! docker image inspect node:20-bookworm-slim >/dev/null 2>&1; then
-    if ! docker pull node:20-bookworm-slim; then
-      docker pull mirror.gcr.io/library/node:20-bookworm-slim
+    if docker pull mirror.gcr.io/library/node:20-bookworm-slim; then
       docker tag mirror.gcr.io/library/node:20-bookworm-slim node:20-bookworm-slim
+    else
+      docker pull node:20-bookworm-slim
     fi
   fi
   docker compose -f "${COMPOSE_FILE}" --env-file .env up -d --build

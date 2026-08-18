@@ -46,24 +46,25 @@ fi
 
 ensure_base_image() {
   local name="$1"
+  local mirror="mirror.gcr.io/library/${name}"
   if docker image inspect "${name}" >/dev/null 2>&1; then
     log "Yerel imaj var: ${name}"
     return 0
   fi
-  local attempt
-  for attempt in 1 2 3; do
-    log "docker pull ${name} (${attempt}/3)"
-    if docker pull "${name}"; then
-      return 0
-    fi
-    sleep $((attempt * 5))
-  done
-  local mirror="mirror.gcr.io/library/${name}"
-  log "Docker Hub zaman aşımı — ayna: ${mirror}"
-  if docker pull "${mirror}"; then
+  if docker image inspect "${mirror}" >/dev/null 2>&1; then
     docker tag "${mirror}" "${name}"
+    log "Ayna imajı etiketlendi: ${name}"
     return 0
   fi
+  # Docker Hub often times out from this VPS; try Google's Hub mirror first.
+  local src
+  for src in "${mirror}" "${name}"; do
+    log "docker pull ${src}"
+    if docker pull "${src}"; then
+      docker tag "${src}" "${name}" 2>/dev/null || true
+      return 0
+    fi
+  done
   log "İmaj çekilemedi: ${name}"
   return 1
 }
@@ -110,9 +111,15 @@ else
   log "Kod güncel (${LOCAL:0:7}) — zorunlu rebuild"
 fi
 
-# Re-install updater script in case it changed
+# Re-install updater script in case it changed, then re-exec so this
+# run uses the new compose/retry logic (not the copy that started).
 if [[ -f scripts/update.sh ]]; then
   install -m 755 scripts/update.sh /usr/local/bin/cutmuck-update
+fi
+
+if [[ "${CUTMUCK_UPDATE_REEXEC:-}" != 1 ]]; then
+  export CUTMUCK_UPDATE_REEXEC=1
+  exec /usr/local/bin/cutmuck-update --force
 fi
 
 compose_rebuild
