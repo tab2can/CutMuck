@@ -758,8 +758,6 @@ a {
 }
 
 .editor-main {
-
-.editor-main {
   display: flex;
   flex-direction: column;
   flex: 1 1 0;
