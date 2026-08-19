@@ -2743,10 +2743,12 @@ body.is-resizing-panels * {
 }
 
 .cm-color-hex {
-  width: 100%;
+  width: 7.2rem;
+  flex: 1 1 auto;
+  min-width: 5.5rem;
   font-family: ui-monospace, monospace;
-  font-size: 0.8rem;
-  padding: 6px 8px;
+  font-size: 0.78rem;
+  padding: 4px 6px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg);

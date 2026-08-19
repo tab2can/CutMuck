@@ -256,6 +256,32 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
   }, [loadAssets]);
 
   useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      const el = e.target as HTMLElement | null;
+      if (el?.closest("textarea, input, [contenteditable='true']")) return;
+      const items = e.clipboardData?.items;
+      let file: File | null = null;
+      if (items) {
+        for (const item of items) {
+          if (item.type.startsWith("image/")) {
+            file = item.getAsFile();
+            break;
+          }
+        }
+      }
+      if (!file && e.clipboardData?.files?.length) {
+        const f = e.clipboardData.files[0];
+        if (f?.type.startsWith("image/")) file = f;
+      }
+      if (!file) return;
+      e.preventDefault();
+      void fileToDataUrl(file).then((src) => void addImageFromSrc(src));
+    }
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, []);
+
+  useEffect(() => {
     if (!initial) setBg(baseSrc);
   }, [baseSrc, initial]);
 
@@ -290,8 +316,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     setSelectedId(layer.id);
   }
 
-  async function addAssetToCanvas(asset: ChannelAsset) {
-    const src = mediaSrc(asset.url) || asset.url;
+  async function addImageFromSrc(src: string) {
     let w = 0.28;
     let h = 0.42;
     try {
@@ -302,9 +327,13 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     } catch {
       /* keep default */
     }
-    const layer = baseLayer("image", { src, x: 0.72, y: 0.5, w, h });
+    const layer = baseLayer("image", { src, x: 0.5, y: 0.5, w, h });
     setLayers((prev) => [...prev, layer]);
     setSelectedId(layer.id);
+  }
+
+  async function addAssetToCanvas(asset: ChannelAsset) {
+    await addImageFromSrc(mediaSrc(asset.url) || asset.url);
   }
 
   async function uploadAsset(file: File) {
@@ -712,6 +741,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                 ))
               )}
             </div>
+            <p className="muted thumb-assets-hint">Ctrl+V panodaki ekran görüntüsünü sahneye ekler; alta kaydedilmez.</p>
           </div>
 
           <aside className="thumb-editor-side">

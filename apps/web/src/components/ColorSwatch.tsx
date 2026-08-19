@@ -2,6 +2,22 @@
 
 import { useEffect, useRef, useState, type PointerEvent } from "react";
 
+function parseColor(raw: string): string | null {
+  const v = raw.trim();
+  const rgb = v.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/i);
+  if (rgb) {
+    return rgbToHex(Number(rgb[1]), Number(rgb[2]), Number(rgb[3]));
+  }
+  const hex = v.replace(/^#/, "");
+  if (/^[0-9a-f]{3}$/i.test(hex)) {
+    return `#${hex.split("").map((c) => c + c).join("")}`.toLowerCase();
+  }
+  if (/^[0-9a-f]{6}$/i.test(hex)) {
+    return `#${hex.toLowerCase()}`;
+  }
+  return null;
+}
+
 function clamp(n: number, a: number, b: number) {
   return Math.min(b, Math.max(a, n));
 }
@@ -75,18 +91,26 @@ type Props = {
 };
 
 export function ColorSwatch({ value, onChange, label }: Props) {
-  const hex = value.slice(0, 7);
+  const hex = (parseColor(value) || value.slice(0, 7) || "#ffe14a").toLowerCase();
   const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(hex);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const root = useRef<HTMLDivElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const rgb = hexToRgb(hex);
   const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
 
   useEffect(() => {
+    setDraft(hex);
+  }, [hex]);
+
+  useEffect(() => {
     if (!open) return;
     function onDoc(e: MouseEvent) {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (root.current?.contains(t) || pop.current?.contains(t)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
@@ -95,6 +119,12 @@ export function ColorSwatch({ value, onChange, label }: Props) {
   function setHsv(h: number, s: number, v: number) {
     const { r, g, b } = hsvToRgb(h, s, v);
     onChange(rgbToHex(r, g, b));
+  }
+
+  function commitDraft(raw: string) {
+    const parsed = parseColor(raw);
+    if (parsed) onChange(parsed);
+    else setDraft(hex);
   }
 
   function onBox(e: PointerEvent<HTMLDivElement>) {
@@ -121,14 +151,40 @@ export function ColorSwatch({ value, onChange, label }: Props) {
         onClick={(e) => {
           const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
           setPos({
-            top: Math.min(r.bottom + 8, window.innerHeight - 260),
+            top: Math.min(r.bottom + 8, window.innerHeight - 280),
             left: Math.max(8, Math.min(r.left, window.innerWidth - 228)),
           });
           setOpen((v) => !v);
         }}
       />
+      <input
+        className="cm-color-hex"
+        value={draft}
+        spellCheck={false}
+        aria-label="Renk kodu"
+        placeholder="#ffe14a"
+        onChange={(e) => {
+          const v = e.target.value;
+          setDraft(v);
+          const parsed = parseColor(v);
+          if (parsed) onChange(parsed);
+        }}
+        onBlur={() => commitDraft(draft)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commitDraft(draft);
+            (e.currentTarget as HTMLInputElement).blur();
+          }
+        }}
+      />
       {open ? (
-        <div className="cm-color-pop" style={{ top: pos.top, left: pos.left }} onPointerDown={(e) => e.stopPropagation()}>
+        <div
+          ref={pop}
+          className="cm-color-pop"
+          style={{ top: pos.top, left: pos.left }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
           <div
             ref={box}
             className="cm-color-sv"
@@ -150,24 +206,9 @@ export function ColorSwatch({ value, onChange, label }: Props) {
           />
           <div className="cm-color-presets">
             {PRESETS.map((c) => (
-              <button
-                key={c}
-                type="button"
-                style={{ background: c }}
-                onClick={() => onChange(c)}
-                aria-label={c}
-              />
+              <button key={c} type="button" style={{ background: c }} onClick={() => onChange(c)} aria-label={c} />
             ))}
           </div>
-          <input
-            className="cm-color-hex"
-            value={hex}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (/^#?[0-9a-fA-F]{6}$/.test(v)) onChange(v.startsWith("#") ? v : `#${v}`);
-            }}
-            spellCheck={false}
-          />
         </div>
       ) : null}
     </div>
