@@ -1,5 +1,5 @@
-export const YT_W = 1280;
-export const YT_H = 720;
+export const YT_W = 1920;
+export const YT_H = 1080;
 
 export async function loadImage(src: string): Promise<HTMLImageElement> {
   let url = src;
@@ -18,7 +18,7 @@ export async function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-/** Letterbox into 1280×720 (true 16:9). Never crop. Caller fills the canvas. */
+/** Letterbox into 1920×1080 (true 16:9). Never crop. Caller fills the canvas. */
 export function drawContained(
   ctx: CanvasRenderingContext2D,
   img: CanvasImageSource,
@@ -39,11 +39,11 @@ export function fitToYtThumb(img: CanvasImageSource, iw: number, ih: number): st
   canvas.width = YT_W;
   canvas.height = YT_H;
   const ctx = canvas.getContext("2d");
-  if (!ctx) return canvas.toDataURL("image/jpeg", 0.92);
+  if (!ctx) return canvas.toDataURL("image/jpeg", 0.9);
   ctx.fillStyle = "#111";
   ctx.fillRect(0, 0, YT_W, YT_H);
   drawContained(ctx, img, iw, ih);
-  return canvas.toDataURL("image/jpeg", 0.92);
+  return canvas.toDataURL("image/jpeg", 0.9);
 }
 
 export async function fileToYtThumb(file: File): Promise<string> {

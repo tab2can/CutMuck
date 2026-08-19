@@ -131,7 +131,7 @@ function PublishInner() {
       const dataUrl = await fileToYtThumb(file);
       setThumbDataUrl(dataUrl);
       setThumbProject((p) => (p ? { ...p, bg: dataUrl } : null));
-      push("Kapak 1280×720 · 16:9 olarak ayarlandı", "ok");
+      push("Kapak 1920×1080 · 16:9 olarak ayarlandı", "ok");
     } catch (e) {
       push(e instanceof Error ? e.message : "Kapak yüklenemedi", "error");
     }
