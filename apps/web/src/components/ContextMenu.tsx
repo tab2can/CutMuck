@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 
 export type MenuItem = {
   id: string;
@@ -44,7 +45,9 @@ export function ContextMenu({ open, x, y, items, onClose }: Props) {
     };
   }, [open, onClose]);
 
-  return (
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
     <AnimatePresence>
       {open ? (
         <motion.div
@@ -80,7 +83,8 @@ export function ContextMenu({ open, x, y, items, onClose }: Props) {
           )}
         </motion.div>
       ) : null}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }
 

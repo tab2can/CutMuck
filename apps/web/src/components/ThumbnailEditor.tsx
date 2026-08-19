@@ -23,7 +23,7 @@ export type ChannelAsset = {
   mime?: string;
 };
 
-type LayerKind = "text" | "image" | "shape";
+type LayerKind = "text" | "image" | "shape" | "frame";
 
 type Layer = {
   id: string;
@@ -63,6 +63,7 @@ type Layer = {
   imgGlowOn: boolean;
   imgGlowColor: string;
   imgGlowBlur: number;
+  autoBox?: boolean;
 };
 
 export type ThumbProject = {
@@ -91,22 +92,36 @@ function hydrateLayer(raw: Partial<Layer> & { shadow?: boolean }): Layer {
   const kind = (raw.kind as LayerKind) || "text";
   const fallback = baseLayer(kind, { id: raw.id || nid() });
   const { shadow, ...rest } = raw;
-  return {
+  let fontSize = rest.fontSize ?? fallback.fontSize;
+  if (kind === "text" && raw.autoBox !== true) {
+    fontSize = Math.max(12, (rest.h ?? fallback.h) * YT_H * (Math.abs(rest.curve ?? 0) > 0.04 ? 0.52 : 0.68));
+  }
+  const layer: Layer = {
     ...fallback,
     ...rest,
     id: raw.id || fallback.id,
     kind,
+    fontSize,
+    autoBox: kind === "text" ? true : rest.autoBox,
     shadowOn: raw.shadowOn ?? shadow ?? fallback.shadowOn,
     visible: rest.visible !== false,
-    locked: !!rest.locked,
+    locked: kind === "frame" ? rest.locked !== false : !!rest.locked,
     name: rest.name || fallback.name,
   };
+  if (kind === "frame") {
+    layer.x = 0.5;
+    layer.y = 0.5;
+    layer.w = 1;
+    layer.h = 1;
+  }
+  return kind === "text" ? fitTextLayer(layer) : layer;
 }
 
 const KIND_LABEL: Record<LayerKind, string> = {
   text: "Metin",
   image: "Görsel",
   shape: "Şekil",
+  frame: "Çerçeve",
 };
 
 function nextLayerName(kind: LayerKind, layers: Layer[]) {
@@ -135,11 +150,14 @@ function isTypingTarget(el: EventTarget | null) {
 }
 
 function cloneProject(p: ThumbProject): ThumbProject {
-  return {
-    ...p,
-    layers: p.layers.map((l) => hydrateLayer(l)),
-    frame: { ...loadThumbPrefs().frame, ...p.frame },
-  };
+  const layers = p.layers.map((l) => hydrateLayer(l));
+  const frame = { ...loadThumbPrefs().frame, ...p.frame };
+  if (frame.on && !layers.some((l) => l.kind === "frame")) {
+    layers.unshift(
+      baseLayer("frame", { name: "Çerçeve", x: 0.5, y: 0.5, w: 1, h: 1, locked: true })
+    );
+  }
+  return { ...p, layers, frame };
 }
 
 function textFromLayer(l: Layer): TextPrefs {
@@ -183,12 +201,13 @@ function baseLayer(kind: LayerKind, patch: Partial<Layer> = {}): Layer {
     locked: false,
     x: 0.5,
     y: 0.55,
-    w: kind === "text" ? 0.5 : 0.32,
-    h: kind === "text" ? 0.2 : 0.45,
+    w: kind === "text" ? 0.5 : kind === "frame" ? 1 : 0.32,
+    h: kind === "text" ? 0.2 : kind === "frame" ? 1 : 0.45,
     rotate: 0,
     opacity: 1,
     text: "ipsum",
-    fontSize: 72,
+    fontSize: kind === "text" ? Math.round(0.2 * YT_H * 0.68) : 72,
+    autoBox: kind === "text",
     src: "",
     ...prefs.text,
     ...prefs.image,
@@ -237,39 +256,70 @@ function resolveFontFamily(font: string) {
   return resolved || font;
 }
 
-function wrapCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
-  const lines: string[] = [];
-  for (const para of (text || "").split("\n")) {
-    if (!para) {
-      lines.push("");
-      continue;
-    }
-    let current = "";
-    for (const word of para.split(" ")) {
-      const next = current ? `${current} ${word}` : word;
-      if (ctx.measureText(next).width <= maxWidth) {
-        current = next;
-        continue;
-      }
-      if (current) lines.push(current);
-      if (ctx.measureText(word).width <= maxWidth) {
-        current = word;
-        continue;
-      }
-      let chunk = "";
-      for (const ch of word) {
-        if (chunk && ctx.measureText(chunk + ch).width > maxWidth) {
-          lines.push(chunk);
-          chunk = ch;
-        } else {
-          chunk += ch;
-        }
-      }
-      current = chunk;
-    }
-    lines.push(current);
+function measureCtx() {
+  if (typeof document === "undefined") return null;
+  const c = document.createElement("canvas");
+  return c.getContext("2d");
+}
+
+function shownText(layer: Layer) {
+  const raw = layer.text || "";
+  return layer.uppercase ? raw.toUpperCase() : raw;
+}
+
+function applyLayerFont(ctx: CanvasRenderingContext2D, layer: Layer, letterSpacing: number) {
+  const fontSize = Math.max(12, layer.fontSize || 72);
+  const family = resolveFontFamily(layer.font);
+  ctx.font = `${layer.italic ? "italic " : ""}${layer.bold ? 800 : 600} ${fontSize}px ${family}`;
+  (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing = `${letterSpacing}px`;
+  return fontSize;
+}
+
+function linePixelWidth(ctx: CanvasRenderingContext2D, line: string) {
+  const m = ctx.measureText(line || " ");
+  const left = Math.max(0, m.actualBoundingBoxLeft ?? 0);
+  const right = Math.max(m.width, m.actualBoundingBoxRight ?? m.width);
+  return Math.max(m.width, left + right);
+}
+
+function measureTextNorm(layer: Layer): { w: number; h: number } {
+  const ctx = measureCtx();
+  if (!ctx) return { w: layer.w, h: layer.h };
+  const fontSize = applyLayerFont(ctx, layer, layer.letterSpacing);
+  const strokeW = (layer.strokeW / 72) * fontSize;
+  const shadowX = layer.shadowOn ? Math.abs((layer.shadowX / 72) * fontSize) : 0;
+  const shadowY = layer.shadowOn ? Math.abs((layer.shadowY / 72) * fontSize) : 0;
+  const shadowB = layer.shadowOn ? (layer.shadowBlur / 72) * fontSize : 0;
+  const padX = strokeW + shadowX + shadowB * 0.3 + (layer.italic ? fontSize * 0.22 : fontSize * 0.05) + 4;
+  const padY = strokeW + shadowY + shadowB * 0.3 + fontSize * 0.08 + 4;
+  if (Math.abs(layer.curve) > 0.04) {
+    (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing = "0px";
+    const chars = [...shownText(layer).replace(/\n/g, " ")];
+    const ls = layer.letterSpacing;
+    const total =
+      chars.reduce((sum, ch) => sum + ctx.measureText(ch === " " ? " " : ch).width, 0) +
+      ls * Math.max(0, chars.length - 1);
+    const extraY = Math.abs(layer.curve) * 40 + fontSize * 0.35;
+    return {
+      w: Math.min(2.8, Math.max(0.04, (total + padX * 2) / YT_W)),
+      h: Math.min(2.8, Math.max(0.04, (fontSize + extraY + padY * 2) / YT_H)),
+    };
   }
-  return lines.length ? lines : [""];
+  const lines = shownText(layer).split("\n");
+  let maxW = 0;
+  for (const line of lines) maxW = Math.max(maxW, linePixelWidth(ctx, line));
+  const lh = fontSize * (layer.lineHeight || 1.05);
+  return {
+    w: Math.min(2.8, Math.max(0.04, (maxW + padX * 2) / YT_W)),
+    h: Math.min(2.8, Math.max(0.04, (lines.length * lh + padY * 2) / YT_H)),
+  };
+}
+
+function fitTextLayer(layer: Layer): Layer {
+  if (layer.kind !== "text") return layer;
+  const box = measureTextNorm(layer);
+  if (Math.abs(layer.w - box.w) < 0.0005 && Math.abs(layer.h - box.h) < 0.0005) return layer;
+  return { ...layer, w: box.w, h: box.h };
 }
 
 function paintCanvasText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, strokeW: number) {
@@ -296,14 +346,11 @@ function paintCanvasText(ctx: CanvasRenderingContext2D, text: string, x: number,
   ctx.fillText(text, x, y);
 }
 
-function drawTextLayer(ctx: CanvasRenderingContext2D, layer: Layer, w: number, h: number, uiScale: number) {
+function drawTextLayer(ctx: CanvasRenderingContext2D, layer: Layer) {
   const curved = Math.abs(layer.curve) > 0.04;
-  const fontSize = Math.max(12, h * (curved ? 0.52 : 0.68));
-  const shown = layer.uppercase ? (layer.text || "").toUpperCase() : layer.text || "";
-  const family = resolveFontFamily(layer.font);
-  const ls = layer.letterSpacing * uiScale;
+  const shown = shownText(layer);
+  const fontSize = applyLayerFont(ctx, layer, curved ? 0 : layer.letterSpacing);
   const strokeW = (layer.strokeW / 72) * fontSize;
-  ctx.font = `${layer.italic ? "italic " : ""}${layer.bold ? 800 : 600} ${fontSize}px ${family}`;
   ctx.textAlign = "center";
   ctx.fillStyle = layer.color;
   ctx.strokeStyle = layer.stroke;
@@ -321,12 +368,11 @@ function drawTextLayer(ctx: CanvasRenderingContext2D, layer: Layer, w: number, h
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 0;
   }
-  const ctxLs = ctx as CanvasRenderingContext2D & { letterSpacing?: string };
 
   if (curved) {
-    ctxLs.letterSpacing = "0px";
     ctx.textBaseline = "bottom";
     const chars = [...shown.replace(/\n/g, " ")];
+    const ls = layer.letterSpacing;
     const widths = chars.map((ch) => ctx.measureText(ch === " " ? " " : ch).width);
     const total = widths.reduce((a, b) => a + b, 0) + ls * Math.max(0, chars.length - 1);
     let cx = -total / 2;
@@ -334,7 +380,7 @@ function drawTextLayer(ctx: CanvasRenderingContext2D, layer: Layer, w: number, h
       const t = chars.length <= 1 ? 0 : i / (chars.length - 1) - 0.5;
       const cw = widths[i];
       ctx.save();
-      ctx.translate(cx + cw / 2, Math.abs(t) * layer.curve * 40 * uiScale);
+      ctx.translate(cx + cw / 2, Math.abs(t) * layer.curve * 40);
       ctx.rotate((t * layer.curve * 55 * Math.PI) / 180);
       paintCanvasText(ctx, chars[i] === " " ? " " : chars[i], 0, 0, strokeW);
       ctx.restore();
@@ -343,9 +389,8 @@ function drawTextLayer(ctx: CanvasRenderingContext2D, layer: Layer, w: number, h
     return;
   }
 
-  ctxLs.letterSpacing = `${ls}px`;
   ctx.textBaseline = "alphabetic";
-  const lines = wrapCanvasText(ctx, shown, Math.max(8, w * 0.98));
+  const lines = shown.split("\n");
   const lh = fontSize * (layer.lineHeight || 1.05);
   let yTop = -(lines.length * lh) / 2;
   for (const line of lines) {
@@ -407,6 +452,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const [renameId, setRenameId] = useState<string | null>(null);
   const dragLayerId = useRef<string | null>(null);
+  const [stageH, setStageH] = useState(YT_H);
   const drag = useRef<{
     id: string;
     mode: "move" | "resize" | "rotate";
@@ -415,6 +461,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     startW: number;
     startH: number;
     startDist: number;
+    startFont: number;
   } | null>(null);
 
   const selected = layers.find((l) => l.id === selectedId) || null;
@@ -432,6 +479,32 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
   useEffect(() => {
     void loadAssets();
   }, [loadAssets]);
+
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const sync = () => setStageH(el.clientHeight || YT_H);
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    let gone = false;
+    const refit = () => {
+      if (gone) return;
+      setLayers((prev) => {
+        const next = prev.map((l) => (l.kind === "text" ? fitTextLayer(l) : l));
+        return next.some((l, i) => l !== prev[i]) ? next : prev;
+      });
+    };
+    refit();
+    void (document.fonts?.ready ?? Promise.resolve()).then(refit);
+    return () => {
+      gone = true;
+    };
+  }, []);
 
   useEffect(() => {
     function onPaste(e: ClipboardEvent) {
@@ -508,12 +581,20 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
   }
 
   function patchLayer(id: string, patch: Partial<Layer>) {
-    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+    setLayers((prev) =>
+      prev.map((l) => {
+        if (l.id !== id) return l;
+        const next = { ...l, ...patch };
+        return next.kind === "text" ? fitTextLayer(next) : next;
+      })
+    );
   }
 
   function addText() {
     setLayers((prev) => {
-      const layer = baseLayer("text", { y: 0.62, x: 0.5, name: nextLayerName("text", prev) });
+      const layer = fitTextLayer(
+        baseLayer("text", { y: 0.62, x: 0.5, name: nextLayerName("text", prev) })
+      );
       setSelectedId(layer.id);
       return [...prev, layer];
     });
@@ -577,9 +658,28 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
   }
 
   function removeLayer(id: string) {
-    setLayers((prev) => prev.filter((l) => l.id !== id));
+    setLayers((prev) => {
+      const next = prev.filter((l) => l.id !== id);
+      if (!next.some((l) => l.kind === "frame" && l.visible)) setFrame((f) => ({ ...f, on: false }));
+      return next;
+    });
     setSelectedId((cur) => (cur === id ? null : cur));
     if (editingId === id) setEditingId(null);
+  }
+
+  function toggleFrame() {
+    const existing = layers.find((l) => l.kind === "frame");
+    if (existing) {
+      const vis = !existing.visible;
+      patchLayer(existing.id, { visible: vis });
+      setFrame((f) => ({ ...f, on: vis }));
+      setSelectedId(vis ? existing.id : null);
+      return;
+    }
+    const layer = baseLayer("frame", { name: "Çerçeve", x: 0.5, y: 0.5, w: 1, h: 1, locked: true });
+    setLayers((prev) => [layer, ...prev]);
+    setFrame((f) => ({ ...f, on: true }));
+    setSelectedId(layer.id);
   }
 
   function reorderVisual(fromId: string, toId: string) {
@@ -618,16 +718,25 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
       {
         id: "vis",
         label: layer.visible ? "Gizle" : "Göster",
-        onSelect: () => patchLayer(id, { visible: !layer.visible }),
+        onSelect: () => {
+          const vis = !layer.visible;
+          patchLayer(id, { visible: vis });
+          if (layer.kind === "frame") setFrame((f) => ({ ...f, on: vis }));
+        },
       },
       {
         id: "lock",
         label: layer.locked ? "Kilidi aç" : "Kilitle",
         onSelect: () => patchLayer(id, { locked: !layer.locked }),
       },
-      { id: "center", label: "Ortala", onSelect: () => patchLayer(id, { x: 0.5, y: 0.5 }) },
+      {
+        id: "center",
+        label: "Ortala",
+        disabled: layer.kind === "frame",
+        onSelect: () => patchLayer(id, { x: 0.5, y: 0.5 }),
+      },
       { id: "sep2", label: "", separator: true, onSelect: noop },
-      { id: "dup", label: "Kopyala", onSelect: () => duplicateLayer(id) },
+      { id: "dup", label: "Kopyala", disabled: layer.kind === "frame", onSelect: () => duplicateLayer(id) },
       { id: "del", label: "Sil", danger: true, onSelect: () => removeLayer(id) },
     ];
   }
@@ -681,6 +790,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     const layer = layers.find((l) => l.id === id);
     setSelectedId(id);
     if (layer?.locked) return;
+    if (layer?.kind === "frame") return;
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     const { x, y } = toNorm(e.clientX, e.clientY);
     const lx = layer?.x ?? 0.5;
@@ -690,9 +800,27 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     const startDist = Math.max(0.04, Math.hypot((x - lx) * 2, (y - ly) * 2));
     if (mode === "rotate") {
       const ang = (Math.atan2(y - ly, x - lx) * 180) / Math.PI;
-      drag.current = { id, mode, dx: ang - (layer?.rotate ?? 0), dy: 0, startW, startH, startDist };
+      drag.current = {
+        id,
+        mode,
+        dx: ang - (layer?.rotate ?? 0),
+        dy: 0,
+        startW,
+        startH,
+        startDist,
+        startFont: layer?.fontSize ?? 72,
+      };
     } else {
-      drag.current = { id, mode, dx: x - lx, dy: y - ly, startW, startH, startDist };
+      drag.current = {
+        id,
+        mode,
+        dx: x - lx,
+        dy: y - ly,
+        startW,
+        startH,
+        startDist,
+        startFont: layer?.fontSize ?? 72,
+      };
     }
   }
 
@@ -720,6 +848,12 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
         w: Math.min(2.8, Math.max(0.04, d.startW * s)),
         h: Math.min(2.8, Math.max(0.04, d.startH * s)),
       });
+      return;
+    }
+    if (layer.kind === "text") {
+      const dist = Math.max(0.04, Math.hypot((x - layer.x) * 2, (y - layer.y) * 2));
+      const s = dist / d.startDist;
+      patchLayer(d.id, { fontSize: Math.min(420, Math.max(14, d.startFont * s)) });
       return;
     }
     patchLayer(d.id, { w, h });
@@ -762,6 +896,10 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
       }
       for (const layer of layers) {
         if (!layer.visible) continue;
+        if (layer.kind === "frame") {
+          drawSoftFrame(ctx, { ...frame, on: true });
+          continue;
+        }
         ctx.save();
         ctx.globalAlpha = layer.opacity;
         const cx = layer.x * YT_W;
@@ -793,13 +931,10 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
           }
         } else if (layer.kind === "text") {
           if (document.fonts?.ready) await document.fonts.ready;
-          const stageH = stageRef.current?.clientHeight || YT_H;
-          const uiScale = YT_H / Math.max(1, stageH);
-          drawTextLayer(ctx, layer, w, h, uiScale);
+          drawTextLayer(ctx, layer);
         }
         ctx.restore();
       }
-      drawSoftFrame(ctx, frame);
       onApply(canvas.toDataURL("image/jpeg", 0.9), snapshot());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Dışa aktarılamadı");
@@ -809,6 +944,8 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
   }
 
   const frameGlow = frame.glow ? Math.max(10, frame.glowBlur) : 0;
+  const stageK = stageH / YT_H;
+  const hasFrame = layers.some((l) => l.kind === "frame" && l.visible);
 
   return (
     <div className="thumb-editor-backdrop" onClick={() => onClose(snapshot())}>
@@ -871,7 +1008,9 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                       aria-label={layer.visible ? "Gizle" : "Göster"}
                       onClick={(e) => {
                         e.stopPropagation();
-                        patchLayer(layer.id, { visible: !layer.visible });
+                        const vis = !layer.visible;
+                        patchLayer(layer.id, { visible: vis });
+                        if (layer.kind === "frame") setFrame((f) => ({ ...f, on: vis }));
                       }}
                     >
                       {layer.visible ? (
@@ -953,20 +1092,38 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                 ) : (
                   <div className="thumb-stage-empty">Arka plan yok — kare yakalayın veya görsel ekleyin</div>
                 )}
-                {frame.on ? (
-                  <div
-                    className="thumb-frame"
-                    style={{
-                      boxShadow: `inset 0 0 ${frame.width + frame.feather}px ${frame.color}, inset 0 0 ${frame.feather * 2}px ${frame.color}99, 0 0 ${frameGlow}px ${frame.color}aa, 0 0 ${frameGlow * 1.8}px ${frame.color}55`,
-                      border: `${Math.max(2, frame.width / 5)}px solid ${frame.color}`,
-                      filter: `blur(${Math.max(0, frame.feather / 18)}px)`,
-                    }}
-                  />
-                ) : null}
                 {layers.map((layer, index) => {
                   if (!layer.visible) return null;
+                  if (layer.kind === "frame") {
+                    return (
+                      <div
+                        key={layer.id}
+                        className={`thumb-layer kind-frame${selectedId === layer.id ? " selected" : ""}`}
+                        style={{
+                          left: "50%",
+                          top: "50%",
+                          width: "100%",
+                          height: "100%",
+                          zIndex: 10 + index,
+                          transform: "translate(-50%, -50%)",
+                          opacity: layer.opacity,
+                        }}
+                        onContextMenu={(e) => openLayerMenu(e, layer.id)}
+                      >
+                        <div
+                          className="thumb-frame"
+                          style={{
+                            boxShadow: `inset 0 0 ${frame.width + frame.feather}px ${frame.color}, inset 0 0 ${frame.feather * 2}px ${frame.color}99, 0 0 ${frameGlow}px ${frame.color}aa, 0 0 ${frameGlow * 1.8}px ${frame.color}55`,
+                            border: `${Math.max(2, frame.width / 5)}px solid ${frame.color}`,
+                            filter: `blur(${Math.max(0, frame.feather / 18)}px)`,
+                          }}
+                        />
+                      </div>
+                    );
+                  }
                   const shown = layer.uppercase ? layer.text.toUpperCase() : layer.text;
                   const chars = [...shown.replace(/\n/g, " ")];
+                  const fontPx = layer.fontSize * stageK;
                   return (
                     <div
                       key={layer.id}
@@ -976,10 +1133,11 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                         top: `${layer.y * 100}%`,
                         width: `${layer.w * 100}%`,
                         height: `${layer.h * 100}%`,
-                        zIndex: 10 + index,
+                        zIndex: selectedId === layer.id ? 900 : 10 + index,
                         opacity: layer.opacity,
                         transform: `translate(-50%, -50%) rotate(${layer.rotate}deg)`,
                         cursor: layer.locked ? "default" : "move",
+                        fontSize: layer.kind === "text" ? `${fontPx}px` : undefined,
                       }}
                       onPointerDown={(e) => onLayerDown(e, layer.id, "move")}
                       onContextMenu={(e) => openLayerMenu(e, layer.id)}
@@ -1008,7 +1166,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                               fontFamily: layer.font,
                               fontStyle: layer.italic ? "italic" : "normal",
                               fontWeight: layer.bold ? 800 : 600,
-                              letterSpacing: `${layer.letterSpacing}px`,
+                              letterSpacing: `${layer.letterSpacing * stageK}px`,
                               WebkitTextStroke: `${(layer.strokeW / 72).toFixed(3)}em ${layer.stroke}`,
                               filter: textShadowFilter(layer),
                             }}
@@ -1019,7 +1177,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                                 <span
                                   key={`${i}-${ch}`}
                                   style={{
-                                    transform: `rotate(${t * layer.curve * 55}deg) translateY(${Math.abs(t) * layer.curve * 40}px)`,
+                                    transform: `rotate(${t * layer.curve * 55}deg) translateY(${Math.abs(t) * layer.curve * 40 * stageK}px)`,
                                   }}
                                 >
                                   {ch === " " ? "\u00a0" : ch}
@@ -1035,7 +1193,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                               fontFamily: layer.font,
                               fontStyle: layer.italic ? "italic" : "normal",
                               fontWeight: layer.bold ? 800 : 600,
-                              letterSpacing: `${layer.letterSpacing}px`,
+                              letterSpacing: `${layer.letterSpacing * stageK}px`,
                               lineHeight: layer.lineHeight,
                               WebkitTextStroke: `${(layer.strokeW / 72).toFixed(3)}em ${layer.stroke}`,
                               filter: textShadowFilter(layer),
@@ -1122,7 +1280,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                 <button type="button" className="btn" onClick={addShape}>
                   Şekil
                 </button>
-                <button type="button" className={`btn${frame.on ? "" : " ghost"}`} onClick={() => setFrame((f) => ({ ...f, on: !f.on }))}>
+                <button type="button" className={`btn${hasFrame ? "" : " ghost"}`} onClick={toggleFrame}>
                   Çerçeve
                 </button>
                 <button type="button" className={`btn${flipH ? "" : " ghost"}`} onClick={() => setFlipH((v) => !v)}>
@@ -1193,7 +1351,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                     }}
                   />
                 </label>
-                {frame.on ? (
+                {hasFrame ? (
                   <label className="field">
                     <span>Çerçeve {frame.width}px</span>
                     <input
@@ -1213,7 +1371,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                   <p className="muted thumb-fx-hint">Çerçeve kapalı</p>
                 )}
               </div>
-              {frame.on ? (
+              {hasFrame ? (
                 <>
                   <div className="thumb-inline-row">
                     <ColorSwatch label="Renk" value={frame.color} onChange={(color) => setFrame((f) => ({ ...f, color }))} />
@@ -1265,7 +1423,18 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
             <div className="thumb-layer-pane">
               {selected ? (
                 <>
-                  <h3>{selected.kind === "text" ? "Metin" : selected.kind === "image" ? "Görsel" : "Şekil"}</h3>
+                  <h3>
+                    {selected.kind === "text"
+                      ? "Metin"
+                      : selected.kind === "image"
+                        ? "Görsel"
+                        : selected.kind === "frame"
+                          ? "Çerçeve"
+                          : "Şekil"}
+                  </h3>
+                  {selected.kind === "frame" ? (
+                    <p className="muted fx-side-hint">Çerçeve arka planın üstünde bir katmandır. Sırayı soldan veya sağ tık ile değiştirin.</p>
+                  ) : null}
                   {selected.kind === "text" ? (
                     <>
                       <label className="field">
@@ -1282,6 +1451,21 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                               </option>
                             ))}
                           </select>
+                        </label>
+                        <label className="field">
+                          <span>Punto {Math.round(selected.fontSize)}</span>
+                          <input
+                            type="range"
+                            min={18}
+                            max={360}
+                            value={Math.round(selected.fontSize)}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { fontSize: Number(e.target.value) })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { fontSize: Math.round(0.2 * YT_H * 0.68) });
+                            }}
+                          />
                         </label>
                         <label className="field">
                           <span>Oval {Math.round(selected.curve * 100)}</span>
@@ -1478,6 +1662,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                       <ColorSwatch label="Dolgu" value={selected.fill.slice(0, 7)} onChange={(fill) => patchLayer(selected.id, { fill })} />
                     </div>
                   ) : null}
+                  {selected.kind !== "frame" ? (
                   <div className="thumb-fx-grid">
                     <label className="field">
                       <span>Döndür {selected.rotate}°</span>
@@ -1510,6 +1695,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                       />
                     </label>
                   </div>
+                  ) : null}
                   <div className="effect-row">
                     <button type="button" className="btn ghost" onClick={() => moveLayer(selected.id, "front")}>
                       Üste
@@ -1517,9 +1703,11 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                     <button type="button" className="btn ghost" onClick={() => moveLayer(selected.id, "back")}>
                       Alta
                     </button>
+                    {selected.kind !== "frame" ? (
                     <button type="button" className="btn ghost" onClick={() => duplicateLayer(selected.id)}>
                       Kopyala
                     </button>
+                    ) : null}
                     <button type="button" className="btn ghost" onClick={() => removeLayer(selected.id)}>
                       Sil
                     </button>
