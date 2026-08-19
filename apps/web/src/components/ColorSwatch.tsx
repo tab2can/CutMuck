@@ -98,11 +98,12 @@ export function ColorSwatch({ value, onChange, label }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const pop = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
+  const hexFocused = useRef(false);
   const rgb = hexToRgb(hex);
   const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
 
   useEffect(() => {
-    setDraft(hex);
+    if (!hexFocused.current) setDraft(hex);
   }, [hex]);
 
   useEffect(() => {
@@ -166,10 +167,16 @@ export function ColorSwatch({ value, onChange, label }: Props) {
         onChange={(e) => {
           const v = e.target.value;
           setDraft(v);
-          const parsed = parseColor(v);
-          if (parsed) onChange(parsed);
+          const compact = v.trim().replace(/^#/, "");
+          if (/^[0-9a-fA-F]{6}$/.test(compact)) onChange(`#${compact.toLowerCase()}`);
         }}
-        onBlur={() => commitDraft(draft)}
+        onFocus={() => {
+          hexFocused.current = true;
+        }}
+        onBlur={() => {
+          hexFocused.current = false;
+          commitDraft(draft);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();

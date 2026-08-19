@@ -13,6 +13,7 @@ export type MenuItem = {
   label: string;
   danger?: boolean;
   disabled?: boolean;
+  separator?: boolean;
   onSelect: () => void;
 };
 
@@ -55,22 +56,28 @@ export function ContextMenu({ open, x, y, items, onClose }: Props) {
           exit={{ opacity: 0, scale: 0.96 }}
           transition={{ duration: 0.12 }}
           role="menu"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
         >
-          {items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="menuitem"
-              className={`context-item ${item.danger ? "danger" : ""}`}
-              disabled={item.disabled}
-              onClick={() => {
-                item.onSelect();
-                onClose();
-              }}
-            >
-              {item.label}
-            </button>
-          ))}
+          {items.map((item) =>
+            item.separator ? (
+              <div key={item.id} className="context-sep" role="separator" />
+            ) : (
+              <button
+                key={item.id}
+                type="button"
+                role="menuitem"
+                className={`context-item ${item.danger ? "danger" : ""}`}
+                disabled={item.disabled}
+                onClick={() => {
+                  item.onSelect();
+                  onClose();
+                }}
+              >
+                {item.label}
+              </button>
+            )
+          )}
         </motion.div>
       ) : null}
     </AnimatePresence>

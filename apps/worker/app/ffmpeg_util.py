@@ -273,6 +273,8 @@ def _encoder_candidates() -> list[list[str]]:
 
 def _needs_full_reencode(overlays: list[dict[str, Any]]) -> bool:
     for ov in overlays:
+        if ov.get("hidden"):
+            continue
         kind = ov.get("type") or "text"
         if kind in _FULL_FRAME_TYPES:
             return True
@@ -298,6 +300,8 @@ def _overlay_reencode_windows(
     but only mutates the first/last few seconds — never the middle."""
     windows: list[tuple[float, float]] = []
     for ov in overlays:
+        if ov.get("hidden"):
+            continue
         kind = ov.get("type") or "text"
         if kind in {"fade", "fadeblack"}:
             head, tail = _fade_head_tail(ov)
@@ -732,6 +736,8 @@ def _encode_overlays(
     visuals: list[dict[str, Any]] = []
 
     for ov in overlays:
+        if ov.get("hidden"):
+            continue
         kind = ov.get("type") or "text"
         if kind == "speed":
             try:

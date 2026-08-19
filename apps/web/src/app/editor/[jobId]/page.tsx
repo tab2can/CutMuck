@@ -42,6 +42,18 @@ function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
 
+function moveById<T extends { id: string }>(items: T[], id: string, where: "front" | "back" | "up" | "down") {
+  const i = items.findIndex((x) => x.id === id);
+  if (i < 0) return items;
+  const next = [...items];
+  const [item] = next.splice(i, 1);
+  if (where === "front") next.push(item);
+  else if (where === "back") next.unshift(item);
+  else if (where === "up") next.splice(Math.min(i + 1, next.length), 0, item);
+  else next.splice(Math.max(i - 1, 0), 0, item);
+  return next;
+}
+
 export default function EditorPage() {
   useNativeContextBlock(true);
   const params = useParams<{ jobId: string }>();
@@ -105,6 +117,7 @@ export default function EditorPage() {
     let mirror = false;
     let letterbox = 0;
     for (const o of overlays) {
+      if (o.hidden) continue;
       const start = o.start_sec ?? 0;
       const end = o.end_sec ?? Number.POSITIVE_INFINITY;
       if (current < start || current > end) continue;
@@ -500,6 +513,10 @@ export default function EditorPage() {
         goPublish();
       } else if (e.key === "Delete" && selectedId) {
         void removeOverlay(selectedId);
+      } else if (e.key === "]" && selectedId) {
+        persistOverlays(moveById(overlaysRef.current, selectedId, e.ctrlKey || e.metaKey ? "front" : "up"), true);
+      } else if (e.key === "[" && selectedId) {
+        persistOverlays(moveById(overlaysRef.current, selectedId, e.ctrlKey || e.metaKey ? "back" : "down"), true);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -557,6 +574,33 @@ export default function EditorPage() {
   function removeOverlay(id: string) {
     if (selectedId === id) setSelectedId(null);
     persistOverlays(overlaysRef.current.filter((o) => o.id !== id), true);
+  }
+
+  function moveOverlay(id: string, where: "front" | "back" | "up" | "down") {
+    persistOverlays(moveById(overlaysRef.current, id, where), true);
+  }
+
+  function duplicateOverlay(id: string) {
+    const src = overlaysRef.current.find((o) => o.id === id);
+    if (!src) return;
+    const copy: TimelineOverlay = { ...src, id: uid() };
+    const i = overlaysRef.current.findIndex((o) => o.id === id);
+    const next = [...overlaysRef.current];
+    next.splice(Math.max(0, i) + 1, 0, copy);
+    setSelectedId(copy.id);
+    persistOverlays(next, true);
+  }
+
+  function reorderOverlays(fromId: string, toId: string) {
+    if (fromId === toId) return;
+    const prev = overlaysRef.current;
+    const from = prev.findIndex((o) => o.id === fromId);
+    const to = prev.findIndex((o) => o.id === toId);
+    if (from < 0 || to < 0) return;
+    const next = [...prev];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    persistOverlays(next, true);
   }
 
   function addEffect(type: TimelineOverlay["type"]) {
@@ -818,6 +862,9 @@ export default function EditorPage() {
                     onSelect={setSelectedId}
                     onChange={(id, patch) => patchOverlay(id, patch, { persist: false })}
                     onCommit={commitOverlays}
+                    onMove={moveOverlay}
+                    onRemove={removeOverlay}
+                    onDuplicate={duplicateOverlay}
                   />
                   {holdHud != null ? (
                     <div className="player-hold-hud">{holdHud.toFixed(2).replace(/\.00$/, "")}x</div>
@@ -1019,6 +1066,9 @@ export default function EditorPage() {
               onCommit={commitOverlays}
               onRemove={removeOverlay}
               onAdd={() => addEffect("text")}
+              onMove={moveOverlay}
+              onDuplicate={duplicateOverlay}
+              onReorder={reorderOverlays}
             />
             </div>
 

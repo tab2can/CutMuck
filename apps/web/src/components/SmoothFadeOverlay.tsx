@@ -22,7 +22,7 @@ export function SmoothFadeOverlay({ videoRef, overlays, current }: Props) {
   overlaysRef.current = overlays;
   currentRef.current = current;
 
-  const hasFade = overlays.some((o) => o.type === "fadeblack" || o.type === "fade");
+  const hasFade = overlays.some((o) => !o.hidden && (o.type === "fadeblack" || o.type === "fade"));
 
   useEffect(() => {
     if (!hasFade) return;

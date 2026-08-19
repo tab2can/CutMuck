@@ -14,6 +14,7 @@ export function fadeBlackAlpha(overlays: TimelineOverlay[], t: number): {
   let alpha = 0;
   let color = "#000000";
   for (const o of overlays) {
+    if (o.hidden) continue;
     if (o.type !== "fadeblack" && o.type !== "fade") continue;
     const start = o.start_sec ?? 0;
     const end = o.end_sec;

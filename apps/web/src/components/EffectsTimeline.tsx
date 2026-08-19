@@ -4,6 +4,7 @@ import { useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "r
 import type { TimelineOverlay } from "@/lib/api";
 import { formatDuration } from "@/lib/api";
 import { clampViewStart, useTimelineWheel, zoomAround } from "@/lib/timelineView";
+import { ContextMenu, type MenuItem } from "@/components/ContextMenu";
 
 type Props = {
   overlays: TimelineOverlay[];
@@ -21,6 +22,9 @@ type Props = {
   onCommit?: () => void;
   onRemove: (id: string) => void;
   onAdd?: () => void;
+  onMove?: (id: string, where: "front" | "back" | "up" | "down") => void;
+  onDuplicate?: (id: string) => void;
+  onReorder?: (fromId: string, toId: string) => void;
 };
 
 const LABELS: Record<string, string> = {
@@ -87,10 +91,15 @@ export function EffectsTimeline({
   onCommit,
   onRemove,
   onAdd,
+  onMove,
+  onDuplicate,
+  onReorder,
 }: Props) {
   const dur = Math.max(duration, 1);
   const rootRef = useRef<HTMLDivElement>(null);
   const laneRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const dragTrackId = useRef<string | null>(null);
   const [hover, setHover] = useState<{ id: string; t: number } | null>(null);
   const [drag, setDrag] = useState<{
     id: string;
@@ -155,8 +164,9 @@ export function EffectsTimeline({
   function onClipPointerDown(e: PointerEvent, ov: TimelineOverlay, mode: DragMode) {
     e.stopPropagation();
     e.preventDefault();
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     onSelect(ov.id);
+    if (ov.locked) return;
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     const start = ov.start_sec ?? 0;
     const end = ov.end_sec ?? dur;
     setDrag({
@@ -223,14 +233,45 @@ export function EffectsTimeline({
   }
 
   function onLaneContextMenu(e: MouseEvent, ov: TimelineOverlay) {
-    if (!e.ctrlKey && !e.metaKey) return;
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      onSelect(ov.id);
+      const t = timeFromClientX(ov.id, e.clientX);
+      const start = ov.start_sec ?? 0;
+      onChange(ov.id, { end_sec: Math.max(t, start + 0.1) });
+      onCommit?.();
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     onSelect(ov.id);
-    const t = timeFromClientX(ov.id, e.clientX);
-    const start = ov.start_sec ?? 0;
-    onChange(ov.id, { end_sec: Math.max(t, start + 0.1) });
-    onCommit?.();
+    setMenu({ x: e.clientX, y: e.clientY, id: ov.id });
+  }
+
+  function reorderVisual(fromId: string, toId: string) {
+    if (fromId === toId) return;
+    onReorder?.(fromId, toId);
+  }
+
+  function menuItems(id: string): MenuItem[] {
+    const ov = overlays.find((o) => o.id === id);
+    if (!ov) return [];
+    const i = overlays.findIndex((o) => o.id === id);
+    const last = overlays.length - 1;
+    const noop = () => undefined;
+    return [
+      { id: "front", label: "Üste taşı", disabled: i === last, onSelect: () => onMove?.(id, "front") },
+      { id: "back", label: "Alta taşı", disabled: i === 0, onSelect: () => onMove?.(id, "back") },
+      { id: "up", label: "Bir üste", disabled: i === last, onSelect: () => onMove?.(id, "up") },
+      { id: "down", label: "Bir alta", disabled: i === 0, onSelect: () => onMove?.(id, "down") },
+      { id: "sep1", label: "", separator: true, onSelect: noop },
+      { id: "vis", label: ov.hidden ? "Göster" : "Gizle", onSelect: () => { onChange(id, { hidden: !ov.hidden }); onCommit?.(); } },
+      { id: "lock", label: ov.locked ? "Kilidi aç" : "Kilitle", onSelect: () => { onChange(id, { locked: !ov.locked }); onCommit?.(); } },
+      { id: "sep2", label: "", separator: true, onSelect: noop },
+      { id: "dup", label: "Kopyala", onSelect: () => onDuplicate?.(id) },
+      { id: "del", label: "Sil", danger: true, onSelect: () => onRemove(id) },
+    ];
   }
 
   if (overlays.length === 0) {
@@ -281,10 +322,40 @@ export function EffectsTimeline({
           return (
             <div
               key={ov.id}
-              className={`fx-track ${selectedId === ov.id ? "selected" : ""}`}
+              className={`fx-track ${selectedId === ov.id ? "selected" : ""} ${ov.hidden ? "is-hidden" : ""}`}
               onClick={() => onSelect(ov.id)}
+              onContextMenu={(e) => onLaneContextMenu(e, ov)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const from = dragTrackId.current;
+                dragTrackId.current = null;
+                if (from) reorderVisual(from, ov.id);
+              }}
             >
-              <span className="fx-track-label">{LABELS[ov.type] || ov.type}</span>
+              <button
+                type="button"
+                className="fx-eye"
+                title={ov.hidden ? "Göster" : "Gizle"}
+                aria-label={ov.hidden ? "Göster" : "Gizle"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onChange(ov.id, { hidden: !ov.hidden });
+                  onCommit?.();
+                }}
+              >
+                {ov.hidden ? "○" : "●"}
+              </button>
+              <span
+                className="fx-track-label"
+                draggable
+                onDragStart={() => {
+                  dragTrackId.current = ov.id;
+                }}
+                title="Sürükleyerek sıra değiştir"
+              >
+                {LABELS[ov.type] || ov.type}
+              </span>
               <div
                 className="fx-track-lane"
                 ref={(el) => {
@@ -356,6 +427,13 @@ export function EffectsTimeline({
           );
         })}
       </div>
+      <ContextMenu
+        open={!!menu}
+        x={menu?.x ?? 0}
+        y={menu?.y ?? 0}
+        items={menu ? menuItems(menu.id) : []}
+        onClose={() => setMenu(null)}
+      />
     </div>
   );
 }

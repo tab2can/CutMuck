@@ -108,6 +108,8 @@ class TimelineOverlay(BaseModel):
     blur: float = 0.0
     amount: float = 0.5
     rotation: float = 0.0
+    hidden: bool = False
+    locked: bool = False
 
 
 class TimelineUpdate(BaseModel):

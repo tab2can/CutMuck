@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { api, mediaSrc } from "@/lib/api";
 import { ColorSwatch } from "@/components/ColorSwatch";
-import { loadImage, YT_H, YT_W, fileToDataUrl, drawContained, drawContainedCentered, rasterizeHtmlBox } from "@/lib/ytThumb";
+import { ContextMenu, type MenuItem } from "@/components/ContextMenu";
+import { loadImage, YT_H, YT_W, fileToDataUrl, drawContained, drawContainedCentered } from "@/lib/ytThumb";
 import {
   loadThumbPrefs,
   saveThumbPrefs,
@@ -27,6 +28,9 @@ type LayerKind = "text" | "image" | "shape";
 type Layer = {
   id: string;
   kind: LayerKind;
+  name: string;
+  visible: boolean;
+  locked: boolean;
   x: number;
   y: number;
   w: number;
@@ -93,7 +97,41 @@ function hydrateLayer(raw: Partial<Layer> & { shadow?: boolean }): Layer {
     id: raw.id || fallback.id,
     kind,
     shadowOn: raw.shadowOn ?? shadow ?? fallback.shadowOn,
+    visible: rest.visible !== false,
+    locked: !!rest.locked,
+    name: rest.name || fallback.name,
   };
+}
+
+const KIND_LABEL: Record<LayerKind, string> = {
+  text: "Metin",
+  image: "Görsel",
+  shape: "Şekil",
+};
+
+function nextLayerName(kind: LayerKind, layers: Layer[]) {
+  const n = layers.filter((l) => l.kind === kind).length + 1;
+  return `${KIND_LABEL[kind]} ${n}`;
+}
+
+function moveById<T extends { id: string }>(items: T[], id: string, where: "front" | "back" | "up" | "down") {
+  const i = items.findIndex((x) => x.id === id);
+  if (i < 0) return items;
+  const next = [...items];
+  const [item] = next.splice(i, 1);
+  if (where === "front") next.push(item);
+  else if (where === "back") next.unshift(item);
+  else if (where === "up") next.splice(Math.min(i + 1, next.length), 0, item);
+  else next.splice(Math.max(i - 1, 0), 0, item);
+  return next;
+}
+
+function isTypingTarget(el: EventTarget | null) {
+  const t = el as HTMLElement | null;
+  if (!t) return false;
+  const tag = t.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return !!t.closest("[contenteditable='true']");
 }
 
 function cloneProject(p: ThumbProject): ThumbProject {
@@ -140,6 +178,9 @@ function baseLayer(kind: LayerKind, patch: Partial<Layer> = {}): Layer {
   return {
     id: nid(),
     kind,
+    name: KIND_LABEL[kind],
+    visible: true,
+    locked: false,
     x: 0.5,
     y: 0.55,
     w: kind === "text" ? 0.5 : 0.32,
@@ -186,14 +227,6 @@ function textShadowFilter(l: Layer) {
   return `drop-shadow(${l.shadowX / 72}em ${l.shadowY / 72}em ${l.shadowBlur / 72}em ${l.shadowColor})`;
 }
 
-function escapeHtml(s: string) {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 function resolveFontFamily(font: string) {
   if (!font.includes("var(")) return font;
   const probe = document.createElement("span");
@@ -204,40 +237,125 @@ function resolveFontFamily(font: string) {
   return resolved || font;
 }
 
-function textLayerHtml(layer: Layer, boxW: number, boxH: number, uiScale: number) {
+function wrapCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  const lines: string[] = [];
+  for (const para of (text || "").split("\n")) {
+    if (!para) {
+      lines.push("");
+      continue;
+    }
+    let current = "";
+    for (const word of para.split(" ")) {
+      const next = current ? `${current} ${word}` : word;
+      if (ctx.measureText(next).width <= maxWidth) {
+        current = next;
+        continue;
+      }
+      if (current) lines.push(current);
+      if (ctx.measureText(word).width <= maxWidth) {
+        current = word;
+        continue;
+      }
+      let chunk = "";
+      for (const ch of word) {
+        if (chunk && ctx.measureText(chunk + ch).width > maxWidth) {
+          lines.push(chunk);
+          chunk = ch;
+        } else {
+          chunk += ch;
+        }
+      }
+      current = chunk;
+    }
+    lines.push(current);
+  }
+  return lines.length ? lines : [""];
+}
+
+function paintCanvasText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, strokeW: number) {
+  const shadowOn = ctx.shadowBlur > 0 || ctx.shadowOffsetX !== 0 || ctx.shadowOffsetY !== 0;
+  if (shadowOn) {
+    ctx.fillText(text, x, y);
+    const color = ctx.shadowColor;
+    const blur = ctx.shadowBlur;
+    const ox = ctx.shadowOffsetX;
+    const oy = ctx.shadowOffsetY;
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+    if (strokeW > 0.25) ctx.strokeText(text, x, y);
+    ctx.fillText(text, x, y);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = blur;
+    ctx.shadowOffsetX = ox;
+    ctx.shadowOffsetY = oy;
+    return;
+  }
+  if (strokeW > 0.25) ctx.strokeText(text, x, y);
+  ctx.fillText(text, x, y);
+}
+
+function drawTextLayer(ctx: CanvasRenderingContext2D, layer: Layer, w: number, h: number, uiScale: number) {
   const curved = Math.abs(layer.curve) > 0.04;
-  const fontSize = Math.max(12, boxH * (curved ? 0.52 : 0.68));
+  const fontSize = Math.max(12, h * (curved ? 0.52 : 0.68));
+  const shown = layer.uppercase ? (layer.text || "").toUpperCase() : layer.text || "";
   const family = resolveFontFamily(layer.font);
-  const raw = layer.uppercase ? layer.text || "" : layer.text || "";
-  const shown = layer.uppercase ? raw.toUpperCase() : raw;
   const ls = layer.letterSpacing * uiScale;
   const strokeW = (layer.strokeW / 72) * fontSize;
-  const filter = layer.shadowOn
-    ? `drop-shadow(${(layer.shadowX / 72) * fontSize}px ${(layer.shadowY / 72) * fontSize}px ${(layer.shadowBlur / 72) * fontSize}px ${layer.shadowColor})`
-    : "none";
-  const base =
-    `width:100%;height:100%;box-sizing:border-box;` +
-    `display:grid;place-items:center;text-align:center;` +
-    `white-space:pre-wrap;word-break:break-word;` +
-    `font-size:${fontSize}px;font-family:${family};font-weight:${layer.bold ? 800 : 600};` +
-    `font-style:${layer.italic ? "italic" : "normal"};color:${layer.color};` +
-    `line-height:${layer.lineHeight};letter-spacing:${ls}px;` +
-    `-webkit-text-stroke:${strokeW}px ${layer.stroke};paint-order:stroke fill;` +
-    `filter:${filter};`;
-  if (curved) {
-    const chars = [...shown.replace(/\n/g, " ")];
-    const spans = chars
-      .map((ch, i) => {
-        const t = chars.length <= 1 ? 0 : i / (chars.length - 1) - 0.5;
-        const rot = t * layer.curve * 55;
-        const ty = Math.abs(t) * layer.curve * 40 * uiScale;
-        const glyph = ch === " " ? "&nbsp;" : escapeHtml(ch);
-        return `<span style="display:inline-block;transform-origin:center bottom;transform:rotate(${rot}deg) translateY(${ty}px)">${glyph}</span>`;
-      })
-      .join("");
-    return `<div style="${base}display:flex;align-items:center;justify-content:center;white-space:nowrap;">${spans}</div>`;
+  ctx.font = `${layer.italic ? "italic " : ""}${layer.bold ? 800 : 600} ${fontSize}px ${family}`;
+  ctx.textAlign = "center";
+  ctx.fillStyle = layer.color;
+  ctx.strokeStyle = layer.stroke;
+  ctx.lineJoin = "round";
+  ctx.miterLimit = 2;
+  ctx.lineWidth = strokeW;
+  if (layer.shadowOn) {
+    ctx.shadowColor = layer.shadowColor;
+    ctx.shadowBlur = (layer.shadowBlur / 72) * fontSize;
+    ctx.shadowOffsetX = (layer.shadowX / 72) * fontSize;
+    ctx.shadowOffsetY = (layer.shadowY / 72) * fontSize;
+  } else {
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
   }
-  return `<div style="${base}">${escapeHtml(shown).replace(/\n/g, "<br/>")}</div>`;
+  const ctxLs = ctx as CanvasRenderingContext2D & { letterSpacing?: string };
+
+  if (curved) {
+    ctxLs.letterSpacing = "0px";
+    ctx.textBaseline = "bottom";
+    const chars = [...shown.replace(/\n/g, " ")];
+    const widths = chars.map((ch) => ctx.measureText(ch === " " ? " " : ch).width);
+    const total = widths.reduce((a, b) => a + b, 0) + ls * Math.max(0, chars.length - 1);
+    let cx = -total / 2;
+    for (let i = 0; i < chars.length; i++) {
+      const t = chars.length <= 1 ? 0 : i / (chars.length - 1) - 0.5;
+      const cw = widths[i];
+      ctx.save();
+      ctx.translate(cx + cw / 2, Math.abs(t) * layer.curve * 40 * uiScale);
+      ctx.rotate((t * layer.curve * 55 * Math.PI) / 180);
+      paintCanvasText(ctx, chars[i] === " " ? " " : chars[i], 0, 0, strokeW);
+      ctx.restore();
+      cx += cw + ls;
+    }
+    return;
+  }
+
+  ctxLs.letterSpacing = `${ls}px`;
+  ctx.textBaseline = "alphabetic";
+  const lines = wrapCanvasText(ctx, shown, Math.max(8, w * 0.98));
+  const lh = fontSize * (layer.lineHeight || 1.05);
+  let yTop = -(lines.length * lh) / 2;
+  for (const line of lines) {
+    const m = ctx.measureText(line || " ");
+    const ascent = m.fontBoundingBoxAscent ?? m.actualBoundingBoxAscent ?? fontSize * 0.8;
+    const descent = m.fontBoundingBoxDescent ?? m.actualBoundingBoxDescent ?? fontSize * 0.2;
+    const baseline = yTop + (lh - (ascent + descent)) / 2 + ascent;
+    paintCanvasText(ctx, line, 0, baseline, strokeW);
+    yTop += lh;
+  }
 }
 
 function drawSoftFrame(ctx: CanvasRenderingContext2D, frame: FramePrefs) {
@@ -286,6 +404,9 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
   const [flipH, setFlipH] = useState(start?.flipH ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const [renameId, setRenameId] = useState<string | null>(null);
+  const dragLayerId = useRef<string | null>(null);
   const drag = useRef<{
     id: string;
     mode: "move" | "resize" | "rotate";
@@ -353,6 +474,35 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     if (selected.kind === "shape") saveThumbPrefs({ shape: { shape: selected.shape, fill: selected.fill } });
   }, [selected]);
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (isTypingTarget(e.target) || editingId) return;
+      if (!selectedId) return;
+      const meta = e.ctrlKey || e.metaKey;
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        removeLayer(selectedId);
+        return;
+      }
+      if (meta && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        duplicateLayer(selectedId);
+        return;
+      }
+      if (e.key === "]") {
+        e.preventDefault();
+        moveLayer(selectedId, meta ? "front" : "up");
+        return;
+      }
+      if (e.key === "[") {
+        e.preventDefault();
+        moveLayer(selectedId, meta ? "back" : "down");
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedId, editingId]);
+
   function snapshot(): ThumbProject {
     return { bg, layers, selectedId, frame, brightness, contrast, saturate, flipH };
   }
@@ -362,15 +512,26 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
   }
 
   function addText() {
-    const layer = baseLayer("text", { y: 0.62, x: 0.5 });
-    setLayers((prev) => [...prev, layer]);
-    setSelectedId(layer.id);
+    setLayers((prev) => {
+      const layer = baseLayer("text", { y: 0.62, x: 0.5, name: nextLayerName("text", prev) });
+      setSelectedId(layer.id);
+      return [...prev, layer];
+    });
   }
 
   function addShape() {
-    const layer = baseLayer("shape", { x: 0.5, y: 0.5, w: 0.4, h: 0.12, opacity: 0.55 });
-    setLayers((prev) => [...prev, layer]);
-    setSelectedId(layer.id);
+    setLayers((prev) => {
+      const layer = baseLayer("shape", {
+        x: 0.5,
+        y: 0.5,
+        w: 0.4,
+        h: 0.12,
+        opacity: 0.55,
+        name: nextLayerName("shape", prev),
+      });
+      setSelectedId(layer.id);
+      return [...prev, layer];
+    });
   }
 
   async function addImageFromSrc(src: string) {
@@ -384,9 +545,91 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     } catch {
       /* keep default */
     }
-    const layer = baseLayer("image", { src, x: 0.5, y: 0.5, w, h });
-    setLayers((prev) => [...prev, layer]);
-    setSelectedId(layer.id);
+    setLayers((prev) => {
+      const layer = baseLayer("image", { src, x: 0.5, y: 0.5, w, h, name: nextLayerName("image", prev) });
+      setSelectedId(layer.id);
+      return [...prev, layer];
+    });
+  }
+
+  function moveLayer(id: string, where: "front" | "back" | "up" | "down") {
+    setLayers((prev) => moveById(prev, id, where));
+  }
+
+  function duplicateLayer(id: string) {
+    setLayers((prev) => {
+      const i = prev.findIndex((l) => l.id === id);
+      if (i < 0) return prev;
+      const src = prev[i];
+      const copy: Layer = {
+        ...src,
+        id: nid(),
+        x: src.x + 0.03,
+        y: src.y + 0.03,
+        name: `${src.name} kopya`,
+        locked: false,
+      };
+      const next = [...prev];
+      next.splice(i + 1, 0, copy);
+      setSelectedId(copy.id);
+      return next;
+    });
+  }
+
+  function removeLayer(id: string) {
+    setLayers((prev) => prev.filter((l) => l.id !== id));
+    setSelectedId((cur) => (cur === id ? null : cur));
+    if (editingId === id) setEditingId(null);
+  }
+
+  function reorderVisual(fromId: string, toId: string) {
+    if (fromId === toId) return;
+    setLayers((prev) => {
+      const visual = [...prev].reverse();
+      const from = visual.findIndex((l) => l.id === fromId);
+      const to = visual.findIndex((l) => l.id === toId);
+      if (from < 0 || to < 0) return prev;
+      const next = [...visual];
+      const [item] = next.splice(from, 1);
+      next.splice(to, 0, item);
+      return next.reverse();
+    });
+  }
+
+  function openLayerMenu(e: MouseEvent, id: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedId(id);
+    setCtxMenu({ x: e.clientX, y: e.clientY, id });
+  }
+
+  function layerMenuItems(id: string): MenuItem[] {
+    const layer = layers.find((l) => l.id === id);
+    if (!layer) return [];
+    const i = layers.findIndex((l) => l.id === id);
+    const last = layers.length - 1;
+    const noop = () => undefined;
+    return [
+      { id: "front", label: "Üste taşı", disabled: i === last, onSelect: () => moveLayer(id, "front") },
+      { id: "back", label: "Alta taşı", disabled: i === 0, onSelect: () => moveLayer(id, "back") },
+      { id: "up", label: "Bir üste", disabled: i === last, onSelect: () => moveLayer(id, "up") },
+      { id: "down", label: "Bir alta", disabled: i === 0, onSelect: () => moveLayer(id, "down") },
+      { id: "sep1", label: "", separator: true, onSelect: noop },
+      {
+        id: "vis",
+        label: layer.visible ? "Gizle" : "Göster",
+        onSelect: () => patchLayer(id, { visible: !layer.visible }),
+      },
+      {
+        id: "lock",
+        label: layer.locked ? "Kilidi aç" : "Kilitle",
+        onSelect: () => patchLayer(id, { locked: !layer.locked }),
+      },
+      { id: "center", label: "Ortala", onSelect: () => patchLayer(id, { x: 0.5, y: 0.5 }) },
+      { id: "sep2", label: "", separator: true, onSelect: noop },
+      { id: "dup", label: "Kopyala", onSelect: () => duplicateLayer(id) },
+      { id: "del", label: "Sil", danger: true, onSelect: () => removeLayer(id) },
+    ];
   }
 
   async function addAssetToCanvas(asset: ChannelAsset) {
@@ -435,8 +678,10 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     e.stopPropagation();
     e.preventDefault();
     if (editingId === id && mode === "move") return;
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     const layer = layers.find((l) => l.id === id);
+    setSelectedId(id);
+    if (layer?.locked) return;
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     const { x, y } = toNorm(e.clientX, e.clientY);
     const lx = layer?.x ?? 0.5;
     const ly = layer?.y ?? 0.5;
@@ -449,7 +694,6 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     } else {
       drag.current = { id, mode, dx: x - lx, dy: y - ly, startW, startH, startDist };
     }
-    setSelectedId(id);
   }
 
   function onPointerMove(e: PointerEvent) {
@@ -517,6 +761,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
         }
       }
       for (const layer of layers) {
+        if (!layer.visible) continue;
         ctx.save();
         ctx.globalAlpha = layer.opacity;
         const cx = layer.x * YT_W;
@@ -547,23 +792,10 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
             /* skip */
           }
         } else if (layer.kind === "text") {
+          if (document.fonts?.ready) await document.fonts.ready;
           const stageH = stageRef.current?.clientHeight || YT_H;
           const uiScale = YT_H / Math.max(1, stageH);
-          const fontSize = Math.max(12, h * (Math.abs(layer.curve) > 0.04 ? 0.52 : 0.68));
-          const pad = Math.ceil(
-            (layer.shadowOn ? (layer.shadowBlur / 72) * fontSize + Math.abs((layer.shadowY / 72) * fontSize) : 0) +
-              fontSize * 0.35
-          );
-          try {
-            if (document.fonts?.ready) await document.fonts.ready;
-            const html = textLayerHtml(layer, w, h, uiScale);
-            const wrapped =
-              `<div style="width:${w + pad * 2}px;height:${h + pad * 2}px;padding:${pad}px;box-sizing:border-box">${html}</div>`;
-            const img = await rasterizeHtmlBox(wrapped, w + pad * 2, h + pad * 2);
-            ctx.drawImage(img, -w / 2 - pad, -h / 2 - pad, w + pad * 2, h + pad * 2);
-          } catch {
-            /* skip text if raster fails */
-          }
+          drawTextLayer(ctx, layer, w, h, uiScale);
         }
         ctx.restore();
       }
@@ -605,6 +837,108 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
         </header>
 
         <div className="thumb-editor-body">
+          <aside className="thumb-editor-layers">
+            <div className="thumb-side-heading">
+              <h3>Katmanlar</h3>
+              <span className="muted">{layers.length}</span>
+            </div>
+            {layers.length === 0 ? (
+              <p className="muted thumb-layers-hint">Sahneye metin, görsel veya şekil ekleyin.</p>
+            ) : (
+              <ul className="thumb-layer-list">
+                {[...layers].reverse().map((layer) => (
+                  <li
+                    key={layer.id}
+                    draggable={!layer.locked && renameId !== layer.id}
+                    className={`thumb-layer-row${selectedId === layer.id ? " selected" : ""}${layer.visible ? "" : " is-hidden"}${layer.locked ? " is-locked" : ""}`}
+                    onClick={() => setSelectedId(layer.id)}
+                    onContextMenu={(e) => openLayerMenu(e, layer.id)}
+                    onDragStart={() => {
+                      dragLayerId.current = layer.id;
+                    }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const from = dragLayerId.current;
+                      dragLayerId.current = null;
+                      if (from) reorderVisual(from, layer.id);
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="thumb-layer-icon"
+                      title={layer.visible ? "Gizle" : "Göster"}
+                      aria-label={layer.visible ? "Gizle" : "Göster"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        patchLayer(layer.id, { visible: !layer.visible });
+                      }}
+                    >
+                      {layer.visible ? (
+                        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+                          <path
+                            fill="currentColor"
+                            d="M12 5c-5 0-9 4.5-10 7 1 2.5 5 7 10 7s9-4.5 10-7c-1-2.5-5-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"
+                          />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+                          <path
+                            fill="currentColor"
+                            d="M3 4.3 4.3 3 21 19.7 19.7 21l-3.1-3.1A12.6 12.6 0 0 1 12 19c-5 0-9-4.5-10-7a13.8 13.8 0 0 1 4.4-5.3L3 4.3zm6.2 6.2A3 3 0 0 0 12 15a3 3 0 0 0 2.8-1.9l-4.6-2.6zM12 5c5 0 9 4.5 10 7a13.4 13.4 0 0 1-3.2 4.3l-1.5-1.5A11 11 0 0 0 20 12c-1-2.2-4.2-6-8-6-1 0-1.9.2-2.8.6L7.7 5.1A12.5 12.5 0 0 1 12 5z"
+                          />
+                        </svg>
+                      )}
+                    </button>
+                    {layer.kind === "image" && layer.src ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img className="thumb-layer-thumb" src={layer.src} alt="" draggable={false} />
+                    ) : (
+                      <span className={`thumb-layer-kind ${layer.kind}`} />
+                    )}
+                    <span className="thumb-layer-meta">
+                      {renameId === layer.id ? (
+                        <input
+                          className="thumb-layer-rename"
+                          value={layer.name}
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => patchLayer(layer.id, { name: e.target.value })}
+                          onBlur={() => setRenameId(null)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === "Escape") (e.currentTarget as HTMLInputElement).blur();
+                          }}
+                        />
+                      ) : (
+                        <strong
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            setRenameId(layer.id);
+                          }}
+                        >
+                          {layer.name}
+                        </strong>
+                      )}
+                      <span>{KIND_LABEL[layer.kind]}</span>
+                    </span>
+                    <button
+                      type="button"
+                      className="thumb-layer-icon"
+                      title={layer.locked ? "Kilidi aç" : "Kilitle"}
+                      aria-label={layer.locked ? "Kilidi aç" : "Kilitle"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        patchLayer(layer.id, { locked: !layer.locked });
+                      }}
+                    >
+                      {layer.locked ? "🔒" : "↕"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="muted thumb-layers-hint">Sürükle · sağ tık · [ ] sıra · Del sil · Ctrl+D kopya</p>
+          </aside>
           <div className="thumb-editor-main">
             <div className="thumb-stage-wrap">
               <div className="thumb-stage" ref={stageRef} onPointerDown={() => { setSelectedId(null); setEditingId(null); }}>
@@ -629,25 +963,28 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                     }}
                   />
                 ) : null}
-                {layers.map((layer) => {
+                {layers.map((layer, index) => {
+                  if (!layer.visible) return null;
                   const shown = layer.uppercase ? layer.text.toUpperCase() : layer.text;
                   const chars = [...shown.replace(/\n/g, " ")];
                   return (
                     <div
                       key={layer.id}
-                      className={`thumb-layer${selectedId === layer.id ? " selected" : ""}`}
+                      className={`thumb-layer${selectedId === layer.id ? " selected" : ""}${layer.locked ? " locked" : ""}`}
                       style={{
                         left: `${layer.x * 100}%`,
                         top: `${layer.y * 100}%`,
                         width: `${layer.w * 100}%`,
                         height: `${layer.h * 100}%`,
-                        zIndex: selectedId === layer.id ? 5 : 3,
+                        zIndex: 10 + index,
                         opacity: layer.opacity,
                         transform: `translate(-50%, -50%) rotate(${layer.rotate}deg)`,
+                        cursor: layer.locked ? "default" : "move",
                       }}
                       onPointerDown={(e) => onLayerDown(e, layer.id, "move")}
+                      onContextMenu={(e) => openLayerMenu(e, layer.id)}
                       onDoubleClick={(e) => {
-                        if (layer.kind !== "text") return;
+                        if (layer.kind !== "text" || layer.locked) return;
                         e.stopPropagation();
                         setSelectedId(layer.id);
                         setEditingId(layer.id);
@@ -719,7 +1056,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                           }}
                         />
                       )}
-                      {selectedId === layer.id && editingId !== layer.id ? (
+                      {selectedId === layer.id && editingId !== layer.id && !layer.locked ? (
                         <>
                           <button
                             type="button"
@@ -1174,25 +1511,16 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                     </label>
                   </div>
                   <div className="effect-row">
-                    <button
-                      type="button"
-                      className="btn ghost"
-                      onClick={() => {
-                        const copy = { ...selected, id: nid(), x: selected.x + 0.04 };
-                        setLayers((prev) => [...prev, copy]);
-                        setSelectedId(copy.id);
-                      }}
-                    >
+                    <button type="button" className="btn ghost" onClick={() => moveLayer(selected.id, "front")}>
+                      Üste
+                    </button>
+                    <button type="button" className="btn ghost" onClick={() => moveLayer(selected.id, "back")}>
+                      Alta
+                    </button>
+                    <button type="button" className="btn ghost" onClick={() => duplicateLayer(selected.id)}>
                       Kopyala
                     </button>
-                    <button
-                      type="button"
-                      className="btn ghost"
-                      onClick={() => {
-                        setLayers((prev) => prev.filter((l) => l.id !== selected.id));
-                        setSelectedId(null);
-                      }}
-                    >
+                    <button type="button" className="btn ghost" onClick={() => removeLayer(selected.id)}>
                       Sil
                     </button>
                   </div>
@@ -1204,6 +1532,13 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
             </div>
           </aside>
         </div>
+        <ContextMenu
+          open={!!ctxMenu}
+          x={ctxMenu?.x ?? 0}
+          y={ctxMenu?.y ?? 0}
+          items={ctxMenu ? layerMenuItems(ctxMenu.id) : []}
+          onClose={() => setCtxMenu(null)}
+        />
       </div>
     </div>
   );

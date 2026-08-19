@@ -688,13 +688,19 @@ a {
 
 .context-menu {
   position: fixed;
-  z-index: 80;
+  z-index: 200;
   min-width: 180px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 6px;
   box-shadow: var(--shadow);
+}
+
+.context-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
 }
 
 .context-item {
@@ -1517,12 +1523,33 @@ body.is-resizing-panels * {
 
 .fx-track {
   display: grid;
-  grid-template-columns: 72px 1fr 28px;
-  gap: 8px;
+  grid-template-columns: 22px 72px 1fr 28px;
+  gap: 6px;
   align-items: center;
   padding: 4px;
   border-radius: 8px;
   cursor: pointer;
+}
+
+.fx-track.is-hidden {
+  opacity: 0.45;
+}
+
+.fx-eye {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.fx-eye:hover {
+  color: inherit;
+  background: var(--bg);
 }
 
 .fx-track-lane {
@@ -2299,8 +2326,8 @@ body.is-resizing-panels * {
 }
 
 .thumb-editor {
-  width: min(1440px, 96vw);
-  height: min(900px, 92vh);
+  width: min(1680px, 98vw);
+  height: min(920px, 94vh);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 18px;
@@ -2335,7 +2362,7 @@ body.is-resizing-panels * {
   flex: 1 1 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(380px, 440px);
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr) minmax(340px, 400px);
 }
 
 .thumb-editor-main {
@@ -2391,7 +2418,7 @@ body.is-resizing-panels * {
   inset: 0;
   border-style: solid;
   pointer-events: none;
-  z-index: 4;
+  z-index: 2000;
 }
 
 .thumb-layer {
@@ -2557,6 +2584,131 @@ body.is-resizing-panels * {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   background: var(--panel);
+}
+
+.thumb-editor-layers {
+  border-right: 1px solid var(--border);
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px 10px 14px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.thumb-editor-layers .thumb-side-heading h3,
+.thumb-editor-layers h3 {
+  margin: 0;
+}
+
+.thumb-layers-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.thumb-layer-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.thumb-layer-row {
+  display: grid;
+  grid-template-columns: 28px 28px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: var(--bg-soft);
+  cursor: pointer;
+  user-select: none;
+}
+
+.thumb-layer-row.selected {
+  border-color: color-mix(in oklab, var(--accent) 55%, var(--border));
+  background: var(--bg);
+}
+
+.thumb-layer-row.is-hidden {
+  opacity: 0.48;
+}
+
+.thumb-layer-row.is-locked {
+  cursor: default;
+}
+
+.thumb-layer-icon {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.thumb-layer-icon:hover {
+  background: var(--bg);
+  color: inherit;
+}
+
+.thumb-layer-thumb,
+.thumb-layer-kind {
+  width: 28px;
+  height: 22px;
+  border-radius: 5px;
+  object-fit: cover;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.thumb-layer-kind.text {
+  background: linear-gradient(180deg, #ffe14a, #c9a00a);
+}
+
+.thumb-layer-kind.shape {
+  background: color-mix(in oklab, var(--accent) 55%, #111);
+}
+
+.thumb-layer-meta {
+  min-width: 0;
+}
+
+.thumb-layer-meta strong {
+  display: block;
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thumb-layer-meta span {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.thumb-layer-rename {
+  width: 100%;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  padding: 2px 4px;
 }
 
 .thumb-side-block {
@@ -2776,6 +2928,12 @@ body.is-resizing-panels * {
   .thumb-editor-body {
     grid-template-columns: 1fr;
     overflow: auto;
+  }
+
+  .thumb-editor-layers {
+    max-height: 200px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
   }
 
   .thumb-stage-wrap {

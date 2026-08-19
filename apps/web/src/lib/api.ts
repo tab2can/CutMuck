@@ -85,6 +85,8 @@ export type TimelineOverlay = {
   blur?: number;
   amount?: number;
   rotation?: number;
+  hidden?: boolean;
+  locked?: boolean;
 };
 
 export type Job = {
