@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { api, mediaSrc } from "@/lib/api";
-import { loadImage, wrapText, YT_H, YT_W, fileToDataUrl } from "@/lib/ytThumb";
+import { loadImage, wrapText, YT_H, YT_W, fileToDataUrl, drawContained } from "@/lib/ytThumb";
 
 export type ChannelAsset = {
   id: string;
@@ -37,6 +37,29 @@ type Layer = {
 };
 
 type Frame = { on: boolean; color: string; width: number; glow: boolean };
+
+export type ThumbProject = {
+  bg: string | null;
+  layers: Layer[];
+  selectedId: string | null;
+  frame: Frame;
+  brightness: number;
+  contrast: number;
+  saturate: number;
+  flipH: boolean;
+};
+
+function idleFrame(): Frame {
+  return { on: false, color: "#ffe14a", width: 18, glow: false };
+}
+
+function cloneProject(p: ThumbProject): ThumbProject {
+  return {
+    ...p,
+    layers: p.layers.map((l) => ({ ...l })),
+    frame: { ...p.frame },
+  };
+}
 
 const FONTS = [
   { id: "impact", label: "Impact", value: 'Impact, Haettenschweiler, "Arial Black", sans-serif' },
@@ -78,22 +101,24 @@ function baseLayer(kind: LayerKind, patch: Partial<Layer> = {}): Layer {
 type Props = {
   channelSlug: string;
   baseSrc: string | null;
-  onClose: () => void;
-  onApply: (dataUrl: string) => void;
+  initial?: ThumbProject | null;
+  onClose: (draft: ThumbProject) => void;
+  onApply: (dataUrl: string, draft: ThumbProject) => void;
 };
 
-export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Props) {
+export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onApply }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const [bg, setBg] = useState(baseSrc);
-  const [layers, setLayers] = useState<Layer[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const start = initial ? cloneProject(initial) : null;
+  const [bg, setBg] = useState(start?.bg ?? baseSrc);
+  const [layers, setLayers] = useState<Layer[]>(start?.layers ?? []);
+  const [selectedId, setSelectedId] = useState<string | null>(start?.selectedId ?? null);
   const [assets, setAssets] = useState<ChannelAsset[]>([]);
-  const [frame, setFrame] = useState<Frame>({ on: true, color: "#ffe14a", width: 18, glow: true });
-  const [brightness, setBrightness] = useState(100);
-  const [contrast, setContrast] = useState(100);
-  const [saturate, setSaturate] = useState(110);
-  const [flipH, setFlipH] = useState(false);
+  const [frame, setFrame] = useState<Frame>(start?.frame ?? idleFrame());
+  const [brightness, setBrightness] = useState(start?.brightness ?? 100);
+  const [contrast, setContrast] = useState(start?.contrast ?? 100);
+  const [saturate, setSaturate] = useState(start?.saturate ?? 100);
+  const [flipH, setFlipH] = useState(start?.flipH ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const drag = useRef<{ id: string; mode: "move" | "resize"; dx: number; dy: number } | null>(null);
@@ -115,8 +140,21 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
   }, [loadAssets]);
 
   useEffect(() => {
-    setBg(baseSrc);
-  }, [baseSrc]);
+    if (!initial) setBg(baseSrc);
+  }, [baseSrc, initial]);
+
+  function snapshot(): ThumbProject {
+    return {
+      bg,
+      layers,
+      selectedId,
+      frame,
+      brightness,
+      contrast,
+      saturate,
+      flipH,
+    };
+  }
 
   function patchLayer(id: string, patch: Partial<Layer>) {
     setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
@@ -240,14 +278,14 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
       ctx.fillRect(0, 0, YT_W, YT_H);
       if (bg) {
         try {
-                      const img = await loadImage(bg);
+          const img = await loadImage(bg);
           ctx.save();
           ctx.filter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturate}%)`;
           if (flipH) {
             ctx.translate(YT_W, 0);
             ctx.scale(-1, 1);
           }
-          ctx.drawImage(img, 0, 0, YT_W, YT_H);
+          drawContained(ctx, img, img.naturalWidth, img.naturalHeight);
           ctx.restore();
         } catch {
           /* keep fill */
@@ -325,7 +363,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
         ctx.strokeRect(t / 2, t / 2, YT_W - t, YT_H - t);
         ctx.restore();
       }
-      onApply(canvas.toDataURL("image/jpeg", 0.92));
+      onApply(canvas.toDataURL("image/jpeg", 0.92), snapshot());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Dışa aktarılamadı");
     } finally {
@@ -334,7 +372,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
   }
 
   return (
-    <div className="thumb-editor-backdrop" onClick={onClose}>
+    <div className="thumb-editor-backdrop" onClick={() => onClose(snapshot())}>
       <div
         className="thumb-editor"
         onClick={(e) => e.stopPropagation()}
@@ -346,12 +384,12 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
           <div>
             <h2>Kapak editörü</h2>
             <p className="muted">
-              1280×720 · kanal görselleri: <strong>{slug === "_genel" ? "genel" : slug}</strong>
+              1280×720 · 16:9 tam kare · kanal: <strong>{slug === "_genel" ? "genel" : slug}</strong>
             </p>
           </div>
           <div className="effect-row">
-            <button type="button" className="btn ghost" onClick={onClose}>
-              İptal
+            <button type="button" className="btn ghost" onClick={() => onClose(snapshot())}>
+              Kapat
             </button>
             <button type="button" className="btn primary" disabled={busy} onClick={() => void exportThumb()}>
               {busy ? "İşleniyor…" : "Kapağı uygula"}
@@ -361,11 +399,12 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
 
         <div className="thumb-editor-body">
           <div className="thumb-editor-main">
-            <div
-              className="thumb-stage"
-              ref={stageRef}
-              onPointerDown={() => setSelectedId(null)}
-            >
+            <div className="thumb-stage-wrap">
+              <div
+                className="thumb-stage"
+                ref={stageRef}
+                onPointerDown={() => setSelectedId(null)}
+              >
               {bg ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -440,6 +479,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
                   ) : null}
                 </div>
               ))}
+              </div>
             </div>
 
             <div className="thumb-assets">
@@ -488,77 +528,103 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
           </div>
 
           <aside className="thumb-editor-side">
-            <h3>Araçlar</h3>
-            <div className="thumb-tools">
-              <button type="button" className="btn" onClick={addText}>
-                Metin
-              </button>
-              <button type="button" className="btn" onClick={addShape}>
-                Şekil
-              </button>
-              <button
-                type="button"
-                className={`btn${frame.on ? "" : " ghost"}`}
-                onClick={() => setFrame((f) => ({ ...f, on: !f.on }))}
-              >
-                Çerçeve
-              </button>
-              <button type="button" className="btn ghost" onClick={() => setFlipH((v) => !v)}>
-                Yatay çevir
-              </button>
+            <div className="thumb-side-block">
+              <h3>Araçlar</h3>
+              <div className="thumb-tools">
+                <button type="button" className="btn" onClick={addText}>
+                  Metin
+                </button>
+                <button type="button" className="btn" onClick={addShape}>
+                  Şekil
+                </button>
+                <button
+                  type="button"
+                  className={`btn${frame.on ? "" : " ghost"}`}
+                  onClick={() => setFrame((f) => ({ ...f, on: !f.on }))}
+                >
+                  Çerçeve
+                </button>
+                <button
+                  type="button"
+                  className={`btn${flipH ? "" : " ghost"}`}
+                  onClick={() => setFlipH((v) => !v)}
+                >
+                  Yatay çevir
+                </button>
+              </div>
             </div>
 
-            <div className="thumb-settings">
-              <h4>Arka plan</h4>
-              <label className="field">
-                <span>Parlaklık {brightness}%</span>
-                <input
-                  type="range"
-                  min={40}
-                  max={160}
-                  value={brightness}
-                  onChange={(e) => setBrightness(Number(e.target.value))}
-                />
-              </label>
-              <label className="field">
-                <span>Kontrast {contrast}%</span>
-                <input
-                  type="range"
-                  min={40}
-                  max={180}
-                  value={contrast}
-                  onChange={(e) => setContrast(Number(e.target.value))}
-                />
-              </label>
-              <label className="field">
-                <span>Doygunluk {saturate}%</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={220}
-                  value={saturate}
-                  onChange={(e) => setSaturate(Number(e.target.value))}
-                />
-              </label>
-              {frame.on ? (
-                <>
-                  <h4>Çerçeve</h4>
+            <div className="thumb-side-block">
+              <div className="thumb-side-heading">
+                <h3>Efekt</h3>
+                <button
+                  type="button"
+                  className="thumb-reset"
+                  onClick={() => {
+                    setBrightness(100);
+                    setContrast(100);
+                    setSaturate(100);
+                    setFlipH(false);
+                    setFrame(idleFrame());
+                  }}
+                >
+                  Sıfırla
+                </button>
+              </div>
+              <div className="thumb-fx-grid">
+                <label className="field">
+                  <span>Parlaklık {brightness}%</span>
+                  <input
+                    type="range"
+                    min={40}
+                    max={160}
+                    value={brightness}
+                    onChange={(e) => setBrightness(Number(e.target.value))}
+                  />
+                </label>
+                <label className="field">
+                  <span>Kontrast {contrast}%</span>
+                  <input
+                    type="range"
+                    min={40}
+                    max={180}
+                    value={contrast}
+                    onChange={(e) => setContrast(Number(e.target.value))}
+                  />
+                </label>
+                <label className="field">
+                  <span>Doygunluk {saturate}%</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={220}
+                    value={saturate}
+                    onChange={(e) => setSaturate(Number(e.target.value))}
+                  />
+                </label>
+                {frame.on ? (
                   <label className="field">
-                    <span>Renk</span>
-                    <input
-                      type="color"
-                      value={frame.color}
-                      onChange={(e) => setFrame((f) => ({ ...f, color: e.target.value }))}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Kalınlık {frame.width}px</span>
+                    <span>Çerçeve {frame.width}px</span>
                     <input
                       type="range"
                       min={6}
                       max={48}
                       value={frame.width}
                       onChange={(e) => setFrame((f) => ({ ...f, width: Number(e.target.value) }))}
+                    />
+                  </label>
+                ) : (
+                  <p className="muted thumb-fx-hint">Çerçeve kapalı — araçlardan açın.</p>
+                )}
+              </div>
+              {frame.on ? (
+                <div className="thumb-inline-row">
+                  <label className="thumb-swatch">
+                    <span>Renk</span>
+                    <input
+                      type="color"
+                      value={frame.color}
+                      onChange={(e) => setFrame((f) => ({ ...f, color: e.target.value }))}
                     />
                   </label>
                   <label className="check-row">
@@ -569,91 +635,98 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
                     />
                     Parıltı
                   </label>
-                </>
+                </div>
               ) : null}
+            </div>
 
+            <div className="thumb-layer-pane">
               {selected ? (
                 <>
-                  <h4>
-                    {selected.kind === "text" ? "Metin" : selected.kind === "image" ? "Görsel" : "Şekil"}{" "}
-                    ayarları
-                  </h4>
+                  <h3>
+                    {selected.kind === "text" ? "Metin" : selected.kind === "image" ? "Görsel" : "Şekil"}
+                  </h3>
                   {selected.kind === "text" ? (
                     <>
                       <label className="field">
                         <span>Yazı</span>
                         <textarea
-                          rows={3}
+                          rows={2}
                           value={selected.text}
                           onChange={(e) => patchLayer(selected.id, { text: e.target.value })}
                         />
                       </label>
-                      <label className="field">
-                        <span>Font</span>
-                        <select
-                          value={selected.font}
-                          onChange={(e) => patchLayer(selected.id, { font: e.target.value })}
-                        >
-                          {FONTS.map((f) => (
-                            <option key={f.id} value={f.value}>
-                              {f.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="field">
-                        <span>Dolgu</span>
-                        <input
-                          type="color"
-                          value={selected.color}
-                          onChange={(e) => patchLayer(selected.id, { color: e.target.value })}
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Kontur</span>
-                        <input
-                          type="color"
-                          value={selected.stroke}
-                          onChange={(e) => patchLayer(selected.id, { stroke: e.target.value })}
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Kontur {selected.strokeW}px</span>
-                        <input
-                          type="range"
-                          min={0}
-                          max={24}
-                          value={selected.strokeW}
-                          onChange={(e) => patchLayer(selected.id, { strokeW: Number(e.target.value) })}
-                        />
-                      </label>
-                      <label className="check-row">
-                        <input
-                          type="checkbox"
-                          checked={selected.bold}
-                          onChange={(e) => patchLayer(selected.id, { bold: e.target.checked })}
-                        />
-                        Kalın
-                      </label>
-                      <label className="check-row">
-                        <input
-                          type="checkbox"
-                          checked={selected.italic}
-                          onChange={(e) => patchLayer(selected.id, { italic: e.target.checked })}
-                        />
-                        İtalik
-                      </label>
-                      <label className="check-row">
-                        <input
-                          type="checkbox"
-                          checked={selected.shadow}
-                          onChange={(e) => patchLayer(selected.id, { shadow: e.target.checked })}
-                        />
-                        Gölge
-                      </label>
+                      <div className="thumb-fx-grid">
+                        <label className="field">
+                          <span>Font</span>
+                          <select
+                            value={selected.font}
+                            onChange={(e) => patchLayer(selected.id, { font: e.target.value })}
+                          >
+                            {FONTS.map((f) => (
+                              <option key={f.id} value={f.value}>
+                                {f.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="field">
+                          <span>Kontur {selected.strokeW}px</span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={24}
+                            value={selected.strokeW}
+                            onChange={(e) => patchLayer(selected.id, { strokeW: Number(e.target.value) })}
+                          />
+                        </label>
+                      </div>
+                      <div className="thumb-inline-row">
+                        <label className="thumb-swatch">
+                          <span>Dolgu</span>
+                          <input
+                            type="color"
+                            value={selected.color}
+                            onChange={(e) => patchLayer(selected.id, { color: e.target.value })}
+                          />
+                        </label>
+                        <label className="thumb-swatch">
+                          <span>Kontur</span>
+                          <input
+                            type="color"
+                            value={selected.stroke}
+                            onChange={(e) => patchLayer(selected.id, { stroke: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                      <div className="thumb-checks">
+                        <label className="check-row">
+                          <input
+                            type="checkbox"
+                            checked={selected.bold}
+                            onChange={(e) => patchLayer(selected.id, { bold: e.target.checked })}
+                          />
+                          Kalın
+                        </label>
+                        <label className="check-row">
+                          <input
+                            type="checkbox"
+                            checked={selected.italic}
+                            onChange={(e) => patchLayer(selected.id, { italic: e.target.checked })}
+                          />
+                          İtalik
+                        </label>
+                        <label className="check-row">
+                          <input
+                            type="checkbox"
+                            checked={selected.shadow}
+                            onChange={(e) => patchLayer(selected.id, { shadow: e.target.checked })}
+                          />
+                          Gölge
+                        </label>
+                      </div>
                     </>
                   ) : selected.kind === "shape" ? (
-                    <>
+                    <div className="thumb-fx-grid">
                       <label className="field">
                         <span>Şekil</span>
                         <select
@@ -666,7 +739,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
                           <option value="ellipse">Elips</option>
                         </select>
                       </label>
-                      <label className="field">
+                      <label className="thumb-swatch">
                         <span>Dolgu</span>
                         <input
                           type="color"
@@ -674,28 +747,30 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
                           onChange={(e) => patchLayer(selected.id, { fill: e.target.value })}
                         />
                       </label>
-                    </>
+                    </div>
                   ) : null}
-                  <label className="field">
-                    <span>Döndür {selected.rotate}°</span>
-                    <input
-                      type="range"
-                      min={-40}
-                      max={40}
-                      value={selected.rotate}
-                      onChange={(e) => patchLayer(selected.id, { rotate: Number(e.target.value) })}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Opaklık {Math.round(selected.opacity * 100)}%</span>
-                    <input
-                      type="range"
-                      min={20}
-                      max={100}
-                      value={Math.round(selected.opacity * 100)}
-                      onChange={(e) => patchLayer(selected.id, { opacity: Number(e.target.value) / 100 })}
-                    />
-                  </label>
+                  <div className="thumb-fx-grid">
+                    <label className="field">
+                      <span>Döndür {selected.rotate}°</span>
+                      <input
+                        type="range"
+                        min={-40}
+                        max={40}
+                        value={selected.rotate}
+                        onChange={(e) => patchLayer(selected.id, { rotate: Number(e.target.value) })}
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Opaklık {Math.round(selected.opacity * 100)}%</span>
+                      <input
+                        type="range"
+                        min={20}
+                        max={100}
+                        value={Math.round(selected.opacity * 100)}
+                        onChange={(e) => patchLayer(selected.id, { opacity: Number(e.target.value) / 100 })}
+                      />
+                    </label>
+                  </div>
                   <div className="effect-row">
                     <button
                       type="button"
@@ -721,10 +796,10 @@ export function ThumbnailEditor({ channelSlug, baseSrc, onClose, onApply }: Prop
                   </div>
                 </>
               ) : (
-                <p className="muted fx-side-hint">Bir katman seçin veya metin / görsel ekleyin.</p>
+                <p className="muted fx-side-hint">Katman seçin veya metin / görsel ekleyin. Kapatınca taslak kalır; YouTube kapağı yalnızca “Kapağı uygula” ile değişir.</p>
               )}
+              {error ? <p className="form-message">{error}</p> : null}
             </div>
-            {error ? <p className="form-message">{error}</p> : null}
           </aside>
         </div>
       </div>

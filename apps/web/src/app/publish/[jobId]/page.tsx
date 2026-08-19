@@ -11,7 +11,7 @@ import {
   type Job,
 } from "@/lib/api";
 import { ClipPreviewPlayer } from "@/components/ClipPreviewPlayer";
-import { ThumbnailEditor } from "@/components/ThumbnailEditor";
+import { ThumbnailEditor, type ThumbProject } from "@/components/ThumbnailEditor";
 import { useNativeContextBlock } from "@/components/ContextMenu";
 import { useTheme } from "@/components/ThemeProvider";
 import { useToast } from "@/components/Toast";
@@ -56,6 +56,7 @@ function PublishInner() {
   const [message, setMessage] = useState<string | null>(null);
   const [ytUrl, setYtUrl] = useState<string | null>(null);
   const [thumbDataUrl, setThumbDataUrl] = useState<string | null>(null);
+  const [thumbProject, setThumbProject] = useState<ThumbProject | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const thumbFileRef = useRef<HTMLInputElement>(null);
 
@@ -119,7 +120,9 @@ function PublishInner() {
       push("Önce videoyu oynatın / yükleyin", "error");
       return;
     }
-    setThumbDataUrl(videoFrameToYtThumb(v));
+    const url = videoFrameToYtThumb(v);
+    setThumbDataUrl(url);
+    setThumbProject((p) => (p ? { ...p, bg: url } : null));
     push("Kare yakalandı", "ok");
   }
 
@@ -127,7 +130,8 @@ function PublishInner() {
     try {
       const dataUrl = await fileToYtThumb(file);
       setThumbDataUrl(dataUrl);
-      push("Kapak 1280×720 olarak ayarlandı", "ok");
+      setThumbProject((p) => (p ? { ...p, bg: dataUrl } : null));
+      push("Kapak 1280×720 · 16:9 olarak ayarlandı", "ok");
     } catch (e) {
       push(e instanceof Error ? e.message : "Kapak yüklenemedi", "error");
     }
@@ -279,7 +283,11 @@ function PublishInner() {
             type="button"
             className="btn ghost"
             disabled={busy || !(job?.meta?.thumbnail as string)}
-            onClick={() => setThumbDataUrl((job?.meta?.thumbnail as string) || null)}
+            onClick={() => {
+              const t = (job?.meta?.thumbnail as string) || null;
+              setThumbDataUrl(t);
+              setThumbProject((p) => (p ? { ...p, bg: t } : null));
+            }}
           >
             Kick thumb
           </button>
@@ -336,9 +344,14 @@ function PublishInner() {
         <ThumbnailEditor
           channelSlug={job?.channel_slug || "_genel"}
           baseSrc={thumbDataUrl}
-          onClose={() => setEditorOpen(false)}
-          onApply={(dataUrl) => {
+          initial={thumbProject}
+          onClose={(draft) => {
+            setThumbProject(draft);
+            setEditorOpen(false);
+          }}
+          onApply={(dataUrl, draft) => {
             setThumbDataUrl(dataUrl);
+            setThumbProject(draft);
             setEditorOpen(false);
             push("Kapak güncellendi", "ok");
           }}
