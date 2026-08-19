@@ -7,6 +7,9 @@ import { loadImage, wrapText, YT_H, YT_W, fileToDataUrl, drawContained, drawCont
 import {
   loadThumbPrefs,
   saveThumbPrefs,
+  DEFAULT_FRAME_PREFS,
+  DEFAULT_TEXT_PREFS,
+  DEFAULT_IMAGE_PREFS,
   type FramePrefs,
   type ImagePrefs,
   type TextPrefs,
@@ -782,20 +785,64 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
               <div className="thumb-fx-grid">
                 <label className="field">
                   <span>Parlaklık {brightness}%</span>
-                  <input type="range" min={40} max={160} value={brightness} onChange={(e) => setBrightness(Number(e.target.value))} />
+                  <input
+                    type="range"
+                    min={40}
+                    max={160}
+                    value={brightness}
+                    title="Çift tık: varsayılan"
+                    onChange={(e) => setBrightness(Number(e.target.value))}
+                    onDoubleClick={(e) => {
+                      e.preventDefault();
+                      setBrightness(100);
+                    }}
+                  />
                 </label>
                 <label className="field">
                   <span>Kontrast {contrast}%</span>
-                  <input type="range" min={40} max={180} value={contrast} onChange={(e) => setContrast(Number(e.target.value))} />
+                  <input
+                    type="range"
+                    min={40}
+                    max={180}
+                    value={contrast}
+                    title="Çift tık: varsayılan"
+                    onChange={(e) => setContrast(Number(e.target.value))}
+                    onDoubleClick={(e) => {
+                      e.preventDefault();
+                      setContrast(100);
+                    }}
+                  />
                 </label>
                 <label className="field">
                   <span>Doygunluk {saturate}%</span>
-                  <input type="range" min={0} max={220} value={saturate} onChange={(e) => setSaturate(Number(e.target.value))} />
+                  <input
+                    type="range"
+                    min={0}
+                    max={220}
+                    value={saturate}
+                    title="Çift tık: varsayılan"
+                    onChange={(e) => setSaturate(Number(e.target.value))}
+                    onDoubleClick={(e) => {
+                      e.preventDefault();
+                      setSaturate(100);
+                    }}
+                  />
                 </label>
                 {frame.on ? (
                   <label className="field">
                     <span>Çerçeve {frame.width}px</span>
-                    <input type="range" min={4} max={64} value={frame.width} onChange={(e) => setFrame((f) => ({ ...f, width: Number(e.target.value) }))} />
+                    <input
+                      type="range"
+                      min={4}
+                      max={64}
+                      value={frame.width}
+                      title="Çift tık: varsayılan"
+                      onChange={(e) => setFrame((f) => ({ ...f, width: Number(e.target.value) }))}
+                      onDoubleClick={(e) => {
+                        e.preventDefault();
+                        setFrame((f) => ({ ...f, width: DEFAULT_FRAME_PREFS.width }));
+                      }}
+                    />
                   </label>
                 ) : (
                   <p className="muted thumb-fx-hint">Çerçeve kapalı</p>
@@ -813,12 +860,34 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                   <div className="thumb-fx-grid">
                     <label className="field">
                       <span>Yumuşaklık {frame.feather}</span>
-                      <input type="range" min={0} max={80} value={frame.feather} onChange={(e) => setFrame((f) => ({ ...f, feather: Number(e.target.value) }))} />
+                      <input
+                        type="range"
+                        min={0}
+                        max={80}
+                        value={frame.feather}
+                        title="Çift tık: varsayılan"
+                        onChange={(e) => setFrame((f) => ({ ...f, feather: Number(e.target.value) }))}
+                        onDoubleClick={(e) => {
+                          e.preventDefault();
+                          setFrame((f) => ({ ...f, feather: DEFAULT_FRAME_PREFS.feather }));
+                        }}
+                      />
                     </label>
                     {frame.glow ? (
                       <label className="field">
                         <span>Parıltı {frame.glowBlur}</span>
-                        <input type="range" min={8} max={90} value={frame.glowBlur} onChange={(e) => setFrame((f) => ({ ...f, glowBlur: Number(e.target.value) }))} />
+                        <input
+                          type="range"
+                          min={8}
+                          max={90}
+                          value={frame.glowBlur}
+                          title="Çift tık: varsayılan"
+                          onChange={(e) => setFrame((f) => ({ ...f, glowBlur: Number(e.target.value) }))}
+                          onDoubleClick={(e) => {
+                            e.preventDefault();
+                            setFrame((f) => ({ ...f, glowBlur: DEFAULT_FRAME_PREFS.glowBlur }));
+                          }}
+                        />
                       </label>
                     ) : (
                       <span />
@@ -851,23 +920,78 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                         </label>
                         <label className="field">
                           <span>Oval {Math.round(selected.curve * 100)}</span>
-                          <input type="range" min={-100} max={100} value={Math.round(selected.curve * 100)} onChange={(e) => patchLayer(selected.id, { curve: Number(e.target.value) / 100 })} />
+                          <input
+                            type="range"
+                            min={-100}
+                            max={100}
+                            value={Math.round(selected.curve * 100)}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { curve: Number(e.target.value) / 100 })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { curve: DEFAULT_TEXT_PREFS.curve });
+                            }}
+                          />
                         </label>
                         <label className="field">
                           <span>Kontur {selected.strokeW}px</span>
-                          <input type="range" min={0} max={28} value={selected.strokeW} onChange={(e) => patchLayer(selected.id, { strokeW: Number(e.target.value) })} />
+                          <input
+                            type="range"
+                            min={0}
+                            max={28}
+                            value={selected.strokeW}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { strokeW: Number(e.target.value) })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { strokeW: DEFAULT_TEXT_PREFS.strokeW });
+                            }}
+                          />
                         </label>
                         <label className="field">
                           <span>Aralık {selected.letterSpacing}</span>
-                          <input type="range" min={-6} max={24} value={selected.letterSpacing} onChange={(e) => patchLayer(selected.id, { letterSpacing: Number(e.target.value) })} />
+                          <input
+                            type="range"
+                            min={-6}
+                            max={24}
+                            value={selected.letterSpacing}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { letterSpacing: Number(e.target.value) })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { letterSpacing: DEFAULT_TEXT_PREFS.letterSpacing });
+                            }}
+                          />
                         </label>
                         <label className="field">
                           <span>Satır {selected.lineHeight.toFixed(2)}</span>
-                          <input type="range" min={70} max={160} value={Math.round(selected.lineHeight * 100)} onChange={(e) => patchLayer(selected.id, { lineHeight: Number(e.target.value) / 100 })} />
+                          <input
+                            type="range"
+                            min={70}
+                            max={160}
+                            value={Math.round(selected.lineHeight * 100)}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { lineHeight: Number(e.target.value) / 100 })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { lineHeight: DEFAULT_TEXT_PREFS.lineHeight });
+                            }}
+                          />
                         </label>
                         <label className="field">
                           <span>Gölge yumuşak {selected.shadowBlur}</span>
-                          <input type="range" min={0} max={40} value={selected.shadowBlur} onChange={(e) => patchLayer(selected.id, { shadowBlur: Number(e.target.value), shadowOn: true })} />
+                          <input
+                            type="range"
+                            min={0}
+                            max={40}
+                            value={selected.shadowBlur}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { shadowBlur: Number(e.target.value), shadowOn: true })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { shadowBlur: DEFAULT_TEXT_PREFS.shadowBlur });
+                            }}
+                          />
                         </label>
                       </div>
                       <div className="thumb-inline-row">
@@ -878,11 +1002,33 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                       <div className="thumb-fx-grid">
                         <label className="field">
                           <span>Gölge X {selected.shadowX}</span>
-                          <input type="range" min={-20} max={20} value={selected.shadowX} onChange={(e) => patchLayer(selected.id, { shadowX: Number(e.target.value) })} />
+                          <input
+                            type="range"
+                            min={-20}
+                            max={20}
+                            value={selected.shadowX}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { shadowX: Number(e.target.value) })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { shadowX: DEFAULT_TEXT_PREFS.shadowX });
+                            }}
+                          />
                         </label>
                         <label className="field">
                           <span>Gölge Y {selected.shadowY}</span>
-                          <input type="range" min={-20} max={20} value={selected.shadowY} onChange={(e) => patchLayer(selected.id, { shadowY: Number(e.target.value) })} />
+                          <input
+                            type="range"
+                            min={-20}
+                            max={20}
+                            value={selected.shadowY}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { shadowY: Number(e.target.value) })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { shadowY: DEFAULT_TEXT_PREFS.shadowY });
+                            }}
+                          />
                         </label>
                       </div>
                       <div className="thumb-checks">
@@ -924,11 +1070,33 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                       <div className="thumb-fx-grid">
                         <label className="field">
                           <span>Kenar {selected.imgBorderW}px</span>
-                          <input type="range" min={0} max={28} value={selected.imgBorderW} onChange={(e) => patchLayer(selected.id, { imgBorderW: Number(e.target.value), imgBorderOn: true })} />
+                          <input
+                            type="range"
+                            min={0}
+                            max={28}
+                            value={selected.imgBorderW}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { imgBorderW: Number(e.target.value), imgBorderOn: true })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { imgBorderW: DEFAULT_IMAGE_PREFS.imgBorderW });
+                            }}
+                          />
                         </label>
                         <label className="field">
                           <span>Yumuşak parıltı {selected.imgGlowBlur}</span>
-                          <input type="range" min={4} max={80} value={selected.imgGlowBlur} onChange={(e) => patchLayer(selected.id, { imgGlowBlur: Number(e.target.value), imgGlowOn: true })} />
+                          <input
+                            type="range"
+                            min={4}
+                            max={80}
+                            value={selected.imgGlowBlur}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { imgGlowBlur: Number(e.target.value), imgGlowOn: true })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { imgGlowBlur: DEFAULT_IMAGE_PREFS.imgGlowBlur });
+                            }}
+                          />
                         </label>
                       </div>
                     </>
@@ -948,11 +1116,33 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                   <div className="thumb-fx-grid">
                     <label className="field">
                       <span>Döndür {selected.rotate}°</span>
-                      <input type="range" min={-180} max={180} value={selected.rotate} onChange={(e) => patchLayer(selected.id, { rotate: Number(e.target.value) })} />
+                      <input
+                        type="range"
+                        min={-180}
+                        max={180}
+                        value={selected.rotate}
+                        title="Çift tık: varsayılan"
+                        onChange={(e) => patchLayer(selected.id, { rotate: Number(e.target.value) })}
+                        onDoubleClick={(e) => {
+                          e.preventDefault();
+                          patchLayer(selected.id, { rotate: 0 });
+                        }}
+                      />
                     </label>
                     <label className="field">
                       <span>Opaklık {Math.round(selected.opacity * 100)}%</span>
-                      <input type="range" min={20} max={100} value={Math.round(selected.opacity * 100)} onChange={(e) => patchLayer(selected.id, { opacity: Number(e.target.value) / 100 })} />
+                      <input
+                        type="range"
+                        min={20}
+                        max={100}
+                        value={Math.round(selected.opacity * 100)}
+                        title="Çift tık: varsayılan"
+                        onChange={(e) => patchLayer(selected.id, { opacity: Number(e.target.value) / 100 })}
+                        onDoubleClick={(e) => {
+                          e.preventDefault();
+                          patchLayer(selected.id, { opacity: 1 });
+                        }}
+                      />
                     </label>
                   </div>
                   <div className="effect-row">
