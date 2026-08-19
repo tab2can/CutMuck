@@ -34,6 +34,22 @@ export function drawContained(
   ctx.drawImage(img, 0, 0, iw, ih, (dw - w) / 2, (dh - h) / 2, w, h);
 }
 
+/** Draw into a box centered at the current origin, keeping aspect ratio (object-fit: contain). */
+export function drawContainedCentered(
+  ctx: CanvasRenderingContext2D,
+  img: CanvasImageSource,
+  iw: number,
+  ih: number,
+  boxW: number,
+  boxH: number
+) {
+  if (!iw || !ih || !boxW || !boxH) return;
+  const scale = Math.min(boxW / iw, boxH / ih);
+  const w = iw * scale;
+  const h = ih * scale;
+  ctx.drawImage(img, 0, 0, iw, ih, -w / 2, -h / 2, w, h);
+}
+
 export function fitToYtThumb(img: CanvasImageSource, iw: number, ih: number): string {
   const canvas = document.createElement("canvas");
   canvas.width = YT_W;

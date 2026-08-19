@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { api, mediaSrc } from "@/lib/api";
 import { ColorSwatch } from "@/components/ColorSwatch";
-import { loadImage, wrapText, YT_H, YT_W, fileToDataUrl, drawContained } from "@/lib/ytThumb";
+import { loadImage, wrapText, YT_H, YT_W, fileToDataUrl, drawContained, drawContainedCentered } from "@/lib/ytThumb";
 import {
   loadThumbPrefs,
   saveThumbPrefs,
@@ -180,7 +180,7 @@ function pngHaloFilter(l: Layer) {
 
 function textShadowFilter(l: Layer) {
   if (!l.shadowOn) return "none";
-  return `drop-shadow(${l.shadowX}px ${l.shadowY}px ${l.shadowBlur}px ${l.shadowColor})`;
+  return `drop-shadow(${l.shadowX / 72}em ${l.shadowY / 72}em ${l.shadowBlur / 72}em ${l.shadowColor})`;
 }
 
 function drawSoftFrame(ctx: CanvasRenderingContext2D, frame: FramePrefs) {
@@ -229,9 +229,15 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
   const [flipH, setFlipH] = useState(start?.flipH ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const drag = useRef<{ id: string; mode: "move" | "resize" | "rotate"; dx: number; dy: number } | null>(
-    null
-  );
+  const drag = useRef<{
+    id: string;
+    mode: "move" | "resize" | "rotate";
+    dx: number;
+    dy: number;
+    startW: number;
+    startH: number;
+    startDist: number;
+  } | null>(null);
 
   const selected = layers.find((l) => l.id === selectedId) || null;
   const slug = channelSlug || "_genel";
@@ -284,9 +290,19 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     setSelectedId(layer.id);
   }
 
-  function addAssetToCanvas(asset: ChannelAsset) {
+  async function addAssetToCanvas(asset: ChannelAsset) {
     const src = mediaSrc(asset.url) || asset.url;
-    const layer = baseLayer("image", { src, x: 0.78, y: 0.5, w: 0.38, h: 0.78 });
+    let w = 0.28;
+    let h = 0.42;
+    try {
+      const img = await loadImage(src);
+      const pixelAR = (img.naturalWidth || 1) / (img.naturalHeight || 1);
+      h = 0.42;
+      w = Math.min(1.4, Math.max(0.08, h * pixelAR * (YT_H / YT_W)));
+    } catch {
+      /* keep default */
+    }
+    const layer = baseLayer("image", { src, x: 0.72, y: 0.5, w, h });
     setLayers((prev) => [...prev, layer]);
     setSelectedId(layer.id);
   }
@@ -301,7 +317,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
         body: JSON.stringify({ name: file.name.replace(/\.[^.]+$/, ""), data_url }),
       });
       setAssets((prev) => [row, ...prev]);
-      addAssetToCanvas(row);
+      void addAssetToCanvas(row);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Görsel eklenemedi");
     } finally {
@@ -336,11 +352,16 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     const layer = layers.find((l) => l.id === id);
     const { x, y } = toNorm(e.clientX, e.clientY);
+    const lx = layer?.x ?? 0.5;
+    const ly = layer?.y ?? 0.5;
+    const startW = layer?.w ?? 0.3;
+    const startH = layer?.h ?? 0.3;
+    const startDist = Math.max(0.04, Math.hypot((x - lx) * 2, (y - ly) * 2));
     if (mode === "rotate") {
-      const ang = (Math.atan2(y - (layer?.y ?? 0.5), x - (layer?.x ?? 0.5)) * 180) / Math.PI;
-      drag.current = { id, mode, dx: ang - (layer?.rotate ?? 0), dy: 0 };
+      const ang = (Math.atan2(y - ly, x - lx) * 180) / Math.PI;
+      drag.current = { id, mode, dx: ang - (layer?.rotate ?? 0), dy: 0, startW, startH, startDist };
     } else {
-      drag.current = { id, mode, dx: x - (layer?.x ?? 0.5), dy: y - (layer?.y ?? 0.5) };
+      drag.current = { id, mode, dx: x - lx, dy: y - ly, startW, startH, startDist };
     }
     setSelectedId(id);
   }
@@ -362,6 +383,15 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
     }
     const w = Math.min(2.8, Math.max(0.04, Math.abs(x - layer.x) * 2));
     const h = Math.min(2.8, Math.max(0.04, Math.abs(y - layer.y) * 2));
+    if (layer.kind === "image") {
+      const dist = Math.max(0.04, Math.hypot((x - layer.x) * 2, (y - layer.y) * 2));
+      const s = dist / d.startDist;
+      patchLayer(d.id, {
+        w: Math.min(2.8, Math.max(0.04, d.startW * s)),
+        h: Math.min(2.8, Math.max(0.04, d.startH * s)),
+      });
+      return;
+    }
     patchLayer(d.id, { w, h });
   }
 
@@ -425,13 +455,13 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
             const img = await loadImage(layer.src);
             const halo = pngHaloFilter(layer);
             if (halo) ctx.filter = halo;
-            ctx.drawImage(img, -w / 2, -h / 2, w, h);
+            drawContainedCentered(ctx, img, img.naturalWidth, img.naturalHeight, w, h);
             ctx.filter = "none";
           } catch {
             /* skip */
           }
         } else if (layer.kind === "text") {
-          const fontSize = Math.max(12, h * 0.72);
+          const fontSize = Math.max(12, h * 0.68);
           const weight = layer.bold ? "800" : "600";
           const style = layer.italic ? "italic" : "normal";
           ctx.font = `${style} ${weight} ${fontSize}px ${layer.font}`;
@@ -440,13 +470,14 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
           const raw = layer.uppercase ? (layer.text || "").toUpperCase() : layer.text || "";
           const paint = (ch: string, x: number, y: number) => {
             if (layer.shadowOn) {
+              const k = fontSize / 72;
               ctx.shadowColor = layer.shadowColor;
-              ctx.shadowBlur = layer.shadowBlur;
-              ctx.shadowOffsetX = layer.shadowX;
-              ctx.shadowOffsetY = layer.shadowY;
+              ctx.shadowBlur = layer.shadowBlur * k;
+              ctx.shadowOffsetX = layer.shadowX * k;
+              ctx.shadowOffsetY = layer.shadowY * k;
             }
             if (layer.strokeW > 0) {
-              ctx.lineWidth = layer.strokeW * (fontSize / 64);
+              ctx.lineWidth = Math.max(1, layer.strokeW * (fontSize / 72));
               ctx.strokeStyle = layer.stroke;
               ctx.lineJoin = "round";
               ctx.strokeText(ch, x, y);
@@ -581,7 +612,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                               fontStyle: layer.italic ? "italic" : "normal",
                               fontWeight: layer.bold ? 800 : 600,
                               letterSpacing: `${layer.letterSpacing}px`,
-                              WebkitTextStroke: `${Math.max(0.4, layer.strokeW / 8)}px ${layer.stroke}`,
+                              WebkitTextStroke: `${(layer.strokeW / 72).toFixed(3)}em ${layer.stroke}`,
                               filter: textShadowFilter(layer),
                             }}
                           >
@@ -609,7 +640,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                               fontWeight: layer.bold ? 800 : 600,
                               letterSpacing: `${layer.letterSpacing}px`,
                               lineHeight: layer.lineHeight,
-                              WebkitTextStroke: `${Math.max(0.4, layer.strokeW / 8)}px ${layer.stroke}`,
+                              WebkitTextStroke: `${(layer.strokeW / 72).toFixed(3)}em ${layer.stroke}`,
                               filter: textShadowFilter(layer),
                             }}
                           >
@@ -670,7 +701,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
               ) : (
                 assets.map((asset) => (
                   <div key={asset.id} className="thumb-asset">
-                    <button type="button" onClick={() => addAssetToCanvas(asset)} title={asset.name}>
+                    <button type="button" onClick={() => void addAssetToCanvas(asset)} title={asset.name}>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={mediaSrc(asset.url) || asset.url} alt={asset.name} />
                     </button>
