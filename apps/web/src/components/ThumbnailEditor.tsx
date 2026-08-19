@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { api, mediaSrc } from "@/lib/api";
 import { ColorSwatch } from "@/components/ColorSwatch";
-import { loadImage, wrapText, YT_H, YT_W, fileToDataUrl, drawContained, drawContainedCentered } from "@/lib/ytThumb";
+import { loadImage, YT_H, YT_W, fileToDataUrl, drawContained, drawContainedCentered, rasterizeHtmlBox } from "@/lib/ytThumb";
 import {
   loadThumbPrefs,
   saveThumbPrefs,
@@ -184,6 +184,60 @@ function pngHaloFilter(l: Layer) {
 function textShadowFilter(l: Layer) {
   if (!l.shadowOn) return "none";
   return `drop-shadow(${l.shadowX / 72}em ${l.shadowY / 72}em ${l.shadowBlur / 72}em ${l.shadowColor})`;
+}
+
+function escapeHtml(s: string) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function resolveFontFamily(font: string) {
+  if (!font.includes("var(")) return font;
+  const probe = document.createElement("span");
+  probe.style.fontFamily = font;
+  document.body.appendChild(probe);
+  const resolved = getComputedStyle(probe).fontFamily;
+  probe.remove();
+  return resolved || font;
+}
+
+function textLayerHtml(layer: Layer, boxW: number, boxH: number, uiScale: number) {
+  const curved = Math.abs(layer.curve) > 0.04;
+  const fontSize = Math.max(12, boxH * (curved ? 0.52 : 0.68));
+  const family = resolveFontFamily(layer.font);
+  const raw = layer.uppercase ? layer.text || "" : layer.text || "";
+  const shown = layer.uppercase ? raw.toUpperCase() : raw;
+  const ls = layer.letterSpacing * uiScale;
+  const strokeW = (layer.strokeW / 72) * fontSize;
+  const filter = layer.shadowOn
+    ? `drop-shadow(${(layer.shadowX / 72) * fontSize}px ${(layer.shadowY / 72) * fontSize}px ${(layer.shadowBlur / 72) * fontSize}px ${layer.shadowColor})`
+    : "none";
+  const base =
+    `width:100%;height:100%;box-sizing:border-box;` +
+    `display:grid;place-items:center;text-align:center;` +
+    `white-space:pre-wrap;word-break:break-word;` +
+    `font-size:${fontSize}px;font-family:${family};font-weight:${layer.bold ? 800 : 600};` +
+    `font-style:${layer.italic ? "italic" : "normal"};color:${layer.color};` +
+    `line-height:${layer.lineHeight};letter-spacing:${ls}px;` +
+    `-webkit-text-stroke:${strokeW}px ${layer.stroke};paint-order:stroke fill;` +
+    `filter:${filter};`;
+  if (curved) {
+    const chars = [...shown.replace(/\n/g, " ")];
+    const spans = chars
+      .map((ch, i) => {
+        const t = chars.length <= 1 ? 0 : i / (chars.length - 1) - 0.5;
+        const rot = t * layer.curve * 55;
+        const ty = Math.abs(t) * layer.curve * 40 * uiScale;
+        const glyph = ch === " " ? "&nbsp;" : escapeHtml(ch);
+        return `<span style="display:inline-block;transform-origin:center bottom;transform:rotate(${rot}deg) translateY(${ty}px)">${glyph}</span>`;
+      })
+      .join("");
+    return `<div style="${base}display:flex;align-items:center;justify-content:center;white-space:nowrap;">${spans}</div>`;
+  }
+  return `<div style="${base}">${escapeHtml(shown).replace(/\n/g, "<br/>")}</div>`;
 }
 
 function drawSoftFrame(ctx: CanvasRenderingContext2D, frame: FramePrefs) {
@@ -493,48 +547,22 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
             /* skip */
           }
         } else if (layer.kind === "text") {
-          const fontSize = Math.max(12, h * 0.68);
-          const weight = layer.bold ? "800" : "600";
-          const style = layer.italic ? "italic" : "normal";
-          ctx.font = `${style} ${weight} ${fontSize}px ${layer.font}`;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          const raw = layer.uppercase ? (layer.text || "").toUpperCase() : layer.text || "";
-          const paint = (ch: string, x: number, y: number) => {
-            if (layer.shadowOn) {
-              const k = fontSize / 72;
-              ctx.shadowColor = layer.shadowColor;
-              ctx.shadowBlur = layer.shadowBlur * k;
-              ctx.shadowOffsetX = layer.shadowX * k;
-              ctx.shadowOffsetY = layer.shadowY * k;
-            }
-            if (layer.strokeW > 0) {
-              ctx.lineWidth = Math.max(1, layer.strokeW * (fontSize / 72));
-              ctx.strokeStyle = layer.stroke;
-              ctx.lineJoin = "round";
-              ctx.strokeText(ch, x, y);
-            }
-            ctx.fillStyle = layer.color;
-            ctx.fillText(ch, x, y);
-            ctx.shadowColor = "transparent";
-          };
-          if (Math.abs(layer.curve) > 0.04) {
-            const chars = [...raw.replace(/\n/g, " ")];
-            const total = Math.max(1, chars.length - 1);
-            chars.forEach((ch, i) => {
-              const t = i / total - 0.5;
-              const ang = t * layer.curve * 1.8;
-              ctx.save();
-              ctx.rotate(ang);
-              ctx.translate(0, Math.abs(t) * h * Math.abs(layer.curve) * 0.9);
-              paint(ch, 0, 0);
-              ctx.restore();
-            });
-          } else {
-            const lines = wrapText(ctx, raw, w);
-            const lh = fontSize * (layer.lineHeight || 1.05);
-            const top = -((lines.length - 1) * lh) / 2;
-            lines.forEach((line, i) => paint(line, 0, top + i * lh));
+          const stageH = stageRef.current?.clientHeight || YT_H;
+          const uiScale = YT_H / Math.max(1, stageH);
+          const fontSize = Math.max(12, h * (Math.abs(layer.curve) > 0.04 ? 0.52 : 0.68));
+          const pad = Math.ceil(
+            (layer.shadowOn ? (layer.shadowBlur / 72) * fontSize + Math.abs((layer.shadowY / 72) * fontSize) : 0) +
+              fontSize * 0.35
+          );
+          try {
+            if (document.fonts?.ready) await document.fonts.ready;
+            const html = textLayerHtml(layer, w, h, uiScale);
+            const wrapped =
+              `<div style="width:${w + pad * 2}px;height:${h + pad * 2}px;padding:${pad}px;box-sizing:border-box">${html}</div>`;
+            const img = await rasterizeHtmlBox(wrapped, w + pad * 2, h + pad * 2);
+            ctx.drawImage(img, -w / 2 - pad, -h / 2 - pad, w + pad * 2, h + pad * 2);
+          } catch {
+            /* skip text if raster fails */
           }
         }
         ctx.restore();

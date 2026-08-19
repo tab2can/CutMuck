@@ -90,21 +90,20 @@ export function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
-export function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
-  const lines: string[] = [];
-  for (const raw of text.split("\n")) {
-    const words = raw.split(" ");
-    let line = "";
-    for (const word of words) {
-      const next = line ? `${line} ${word}` : word;
-      if (ctx.measureText(next).width > maxWidth && line) {
-        lines.push(line);
-        line = word;
-      } else {
-        line = next;
-      }
-    }
-    lines.push(line);
-  }
-  return lines;
+export function rasterizeHtmlBox(html: string, width: number, height: number): Promise<HTMLImageElement> {
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+    `<foreignObject x="0" y="0" width="${w}" height="${h}">` +
+    `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;height:${h}px">${html}</div>` +
+    `</foreignObject></svg>`;
+  const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Metin çizilemedi"));
+    img.src = url;
+  });
 }
+
