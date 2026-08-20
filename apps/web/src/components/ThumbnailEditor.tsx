@@ -1271,27 +1271,32 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
           </div>
 
           <aside className="thumb-editor-side">
-            <div className="thumb-side-block">
-              <h3>Araçlar</h3>
+            <div className="thumb-side-scroll">
+            <section className="thumb-side-block">
+              <h3>Ekle</h3>
               <div className="thumb-tools">
-                <button type="button" className="btn" onClick={addText}>
-                  Metin
+                <button type="button" className="thumb-tool" onClick={addText}>
+                  <span className="thumb-tool-ico" aria-hidden>Aa</span>
+                  <span>Metin</span>
                 </button>
-                <button type="button" className="btn" onClick={addShape}>
-                  Şekil
+                <button type="button" className="thumb-tool" onClick={addShape}>
+                  <span className="thumb-tool-ico" aria-hidden>□</span>
+                  <span>Şekil</span>
                 </button>
-                <button type="button" className={`btn${hasFrame ? "" : " ghost"}`} onClick={toggleFrame}>
-                  Çerçeve
+                <button type="button" className={`thumb-tool${hasFrame ? " active" : ""}`} onClick={toggleFrame}>
+                  <span className="thumb-tool-ico" aria-hidden>▣</span>
+                  <span>Çerçeve</span>
                 </button>
-                <button type="button" className={`btn${flipH ? "" : " ghost"}`} onClick={() => setFlipH((v) => !v)}>
-                  Çevir
+                <button type="button" className={`thumb-tool${flipH ? " active" : ""}`} onClick={() => setFlipH((v) => !v)}>
+                  <span className="thumb-tool-ico" aria-hidden>⇄</span>
+                  <span>Çevir</span>
                 </button>
               </div>
-            </div>
+            </section>
 
-            <div className="thumb-side-block">
+            <section className="thumb-side-block">
               <div className="thumb-side-heading">
-                <h3>Efekt</h3>
+                <h3>Sahne</h3>
                 <button
                   type="button"
                   className="thumb-reset"
@@ -1305,9 +1310,11 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                   Sıfırla
                 </button>
               </div>
-              <div className="thumb-fx-grid">
-                <label className="field">
-                  <span>Parlaklık {brightness}%</span>
+              <div className="thumb-slider-stack">
+                <label className="thumb-slider">
+                  <span>
+                    Parlaklık <em>{brightness}%</em>
+                  </span>
                   <input
                     type="range"
                     min={40}
@@ -1321,8 +1328,10 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                     }}
                   />
                 </label>
-                <label className="field">
-                  <span>Kontrast {contrast}%</span>
+                <label className="thumb-slider">
+                  <span>
+                    Kontrast <em>{contrast}%</em>
+                  </span>
                   <input
                     type="range"
                     min={40}
@@ -1336,8 +1345,10 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                     }}
                   />
                 </label>
-                <label className="field">
-                  <span>Doygunluk {saturate}%</span>
+                <label className="thumb-slider">
+                  <span>
+                    Doygunluk <em>{saturate}%</em>
+                  </span>
                   <input
                     type="range"
                     min={0}
@@ -1351,9 +1362,20 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                     }}
                   />
                 </label>
-                {hasFrame ? (
-                  <label className="field">
-                    <span>Çerçeve {frame.width}px</span>
+              </div>
+            </section>
+
+            {hasFrame ? (
+              <section className="thumb-side-block">
+                <div className="thumb-side-heading">
+                  <h3>Çerçeve</h3>
+                  <ColorSwatch label="Renk" value={frame.color} onChange={(color) => setFrame((f) => ({ ...f, color }))} />
+                </div>
+                <div className="thumb-slider-stack">
+                  <label className="thumb-slider">
+                    <span>
+                      Kalınlık <em>{frame.width}px</em>
+                    </span>
                     <input
                       type="range"
                       min={4}
@@ -1367,73 +1389,68 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                       }}
                     />
                   </label>
-                ) : (
-                  <p className="muted thumb-fx-hint">Çerçeve kapalı</p>
-                )}
-              </div>
-              {hasFrame ? (
-                <>
-                  <div className="thumb-inline-row">
-                    <ColorSwatch label="Renk" value={frame.color} onChange={(color) => setFrame((f) => ({ ...f, color }))} />
-                    <label className="check-row">
-                      <input type="checkbox" checked={frame.glow} onChange={(e) => setFrame((f) => ({ ...f, glow: e.target.checked }))} />
-                      Parıltı
-                    </label>
-                  </div>
-                  <div className="thumb-fx-grid">
-                    <label className="field">
-                      <span>Yumuşaklık {frame.feather}</span>
+                  <label className="thumb-slider">
+                    <span>
+                      Yumuşaklık <em>{frame.feather}</em>
+                    </span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={80}
+                      value={frame.feather}
+                      title="Çift tık: varsayılan"
+                      onChange={(e) => setFrame((f) => ({ ...f, feather: Number(e.target.value) }))}
+                      onDoubleClick={(e) => {
+                        e.preventDefault();
+                        setFrame((f) => ({ ...f, feather: DEFAULT_FRAME_PREFS.feather }));
+                      }}
+                    />
+                  </label>
+                  {frame.glow ? (
+                    <label className="thumb-slider">
+                      <span>
+                        Parıltı <em>{frame.glowBlur}</em>
+                      </span>
                       <input
                         type="range"
-                        min={0}
-                        max={80}
-                        value={frame.feather}
+                        min={8}
+                        max={90}
+                        value={frame.glowBlur}
                         title="Çift tık: varsayılan"
-                        onChange={(e) => setFrame((f) => ({ ...f, feather: Number(e.target.value) }))}
+                        onChange={(e) => setFrame((f) => ({ ...f, glowBlur: Number(e.target.value) }))}
                         onDoubleClick={(e) => {
                           e.preventDefault();
-                          setFrame((f) => ({ ...f, feather: DEFAULT_FRAME_PREFS.feather }));
+                          setFrame((f) => ({ ...f, glowBlur: DEFAULT_FRAME_PREFS.glowBlur }));
                         }}
                       />
                     </label>
-                    {frame.glow ? (
-                      <label className="field">
-                        <span>Parıltı {frame.glowBlur}</span>
-                        <input
-                          type="range"
-                          min={8}
-                          max={90}
-                          value={frame.glowBlur}
-                          title="Çift tık: varsayılan"
-                          onChange={(e) => setFrame((f) => ({ ...f, glowBlur: Number(e.target.value) }))}
-                          onDoubleClick={(e) => {
-                            e.preventDefault();
-                            setFrame((f) => ({ ...f, glowBlur: DEFAULT_FRAME_PREFS.glowBlur }));
-                          }}
-                        />
-                      </label>
-                    ) : (
-                      <span />
-                    )}
-                  </div>
-                </>
-              ) : null}
-            </div>
+                  ) : null}
+                </div>
+                <label className="thumb-chip">
+                  <input type="checkbox" checked={frame.glow} onChange={(e) => setFrame((f) => ({ ...f, glow: e.target.checked }))} />
+                  Parıltı açık
+                </label>
+              </section>
+            ) : null}
 
-            <div className="thumb-layer-pane">
-              {selected ? (
-                <>
-                  <h3>
-                    {selected.kind === "text"
+            <section className="thumb-layer-pane">
+              <div className="thumb-side-heading">
+                <h3>
+                  {selected
+                    ? selected.kind === "text"
                       ? "Metin"
                       : selected.kind === "image"
                         ? "Görsel"
                         : selected.kind === "frame"
-                          ? "Çerçeve"
-                          : "Şekil"}
-                  </h3>
+                          ? "Çerçeve katmanı"
+                          : "Şekil"
+                    : "Özellikler"}
+                </h3>
+              </div>
+              {selected ? (
+                <>
                   {selected.kind === "frame" ? (
-                    <p className="muted fx-side-hint">Çerçeve arka planın üstünde bir katmandır. Sırayı soldan veya sağ tık ile değiştirin.</p>
+                    <p className="muted thumb-pane-hint">Sırayı sol panelden veya sağ tık menüsünden değiştirin.</p>
                   ) : null}
                   {selected.kind === "text" ? (
                     <>
@@ -1696,7 +1713,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                     </label>
                   </div>
                   ) : null}
-                  <div className="effect-row">
+                  <div className="thumb-action-row">
                     <button type="button" className="btn ghost" onClick={() => moveLayer(selected.id, "front")}>
                       Üste
                     </button>
@@ -1708,15 +1725,16 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                       Kopyala
                     </button>
                     ) : null}
-                    <button type="button" className="btn ghost" onClick={() => removeLayer(selected.id)}>
+                    <button type="button" className="btn ghost danger" onClick={() => removeLayer(selected.id)}>
                       Sil
                     </button>
                   </div>
                 </>
               ) : (
-                <p className="muted fx-side-hint">Katman seçin. Kapatınca taslak kalır; kapak yalnızca uygula ile değişir. Yazı/çerçeve ayarları sonraki videoda da hatırlanır.</p>
+                <p className="muted thumb-pane-hint">Katman seçin. Kapatınca taslak kalır; kapak yalnızca uygula ile değişir.</p>
               )}
               {error ? <p className="form-message">{error}</p> : null}
+            </section>
             </div>
           </aside>
         </div>
