@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, typ
 import { api, mediaSrc } from "@/lib/api";
 import { ColorSwatch } from "@/components/ColorSwatch";
 import { ContextMenu, type MenuItem } from "@/components/ContextMenu";
-import { loadImage, YT_H, YT_W, fileToDataUrl, drawContained, drawContainedCentered } from "@/lib/ytThumb";
+import { loadImage, YT_H, YT_W, fileToDataUrl, drawContained, drawContainedCentered, rasterizeHtmlBox } from "@/lib/ytThumb";
 import {
   loadThumbPrefs,
   saveThumbPrefs,
@@ -256,6 +256,52 @@ function resolveFontFamily(font: string) {
   return resolved || font;
 }
 
+function escapeHtml(s: string) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Same CSS layout as `.thumb-layer-text` so apply matches the editor. */
+function textLayerExportHtml(layer: Layer, boxW: number, boxH: number) {
+  const fontSize = Math.max(12, layer.fontSize || 72);
+  const family = resolveFontFamily(layer.font).replace(/"/g, "'");
+  const shown = escapeHtml(shownText(layer)).replace(/\n/g, "<br/>");
+  const strokeW = (layer.strokeW / 72) * fontSize;
+  const sx = (layer.shadowX / 72) * fontSize;
+  const sy = (layer.shadowY / 72) * fontSize;
+  const sb = (layer.shadowBlur / 72) * fontSize;
+  // text-shadow (not filter) — foreignObject often drops CSS filters
+  const shadow = layer.shadowOn
+    ? `text-shadow:${sx}px ${sy}px ${sb}px ${layer.shadowColor},${sx}px ${sy}px ${sb * 0.45}px ${layer.shadowColor}`
+    : "text-shadow:none";
+  return (
+    `<div style="width:${Math.round(boxW)}px;height:${Math.round(boxH)}px;display:flex;flex-direction:column;` +
+    `align-items:center;justify-content:center;box-sizing:border-box;overflow:visible">` +
+    `<div style="width:100%;text-align:center;white-space:pre;word-break:normal;` +
+    `font-size:${fontSize}px;font-family:${family};font-weight:${layer.bold ? 800 : 600};` +
+    `font-style:${layer.italic ? "italic" : "normal"};color:${layer.color};` +
+    `line-height:${layer.lineHeight};letter-spacing:${layer.letterSpacing}px;` +
+    `-webkit-text-stroke:${strokeW}px ${layer.stroke};paint-order:stroke fill;${shadow}">` +
+    `${shown}</div></div>`
+  );
+}
+
+async function drawTextLayerExport(ctx: CanvasRenderingContext2D, layer: Layer, boxW: number, boxH: number) {
+  if (Math.abs(layer.curve) > 0.04) {
+    drawTextLayer(ctx, layer);
+    return;
+  }
+  try {
+    const img = await rasterizeHtmlBox(textLayerExportHtml(layer, boxW, boxH), boxW, boxH);
+    ctx.drawImage(img, -boxW / 2, -boxH / 2, boxW, boxH);
+  } catch {
+    drawTextLayer(ctx, layer);
+  }
+}
+
 function measureCtx() {
   if (typeof document === "undefined") return null;
   const c = document.createElement("canvas");
@@ -370,11 +416,16 @@ function drawTextLayer(ctx: CanvasRenderingContext2D, layer: Layer) {
   }
 
   if (curved) {
-    ctx.textBaseline = "bottom";
+    // Match editor: glyphs sit on a shared baseline around the box center.
+    ctx.textBaseline = "alphabetic";
     const chars = [...shown.replace(/\n/g, " ")];
     const ls = layer.letterSpacing;
     const widths = chars.map((ch) => ctx.measureText(ch === " " ? " " : ch).width);
     const total = widths.reduce((a, b) => a + b, 0) + ls * Math.max(0, chars.length - 1);
+    const m = ctx.measureText("Mg");
+    const ascent = m.fontBoundingBoxAscent ?? m.actualBoundingBoxAscent ?? fontSize * 0.8;
+    const descent = m.fontBoundingBoxDescent ?? m.actualBoundingBoxDescent ?? fontSize * 0.2;
+    const baseY = (ascent - descent) / 2;
     let cx = -total / 2;
     for (let i = 0; i < chars.length; i++) {
       const t = chars.length <= 1 ? 0 : i / (chars.length - 1) - 0.5;
@@ -382,24 +433,21 @@ function drawTextLayer(ctx: CanvasRenderingContext2D, layer: Layer) {
       ctx.save();
       ctx.translate(cx + cw / 2, Math.abs(t) * layer.curve * 40);
       ctx.rotate((t * layer.curve * 55 * Math.PI) / 180);
-      paintCanvasText(ctx, chars[i] === " " ? " " : chars[i], 0, 0, strokeW);
+      paintCanvasText(ctx, chars[i] === " " ? " " : chars[i], 0, baseY, strokeW);
       ctx.restore();
       cx += cw + ls;
     }
     return;
   }
 
-  ctx.textBaseline = "alphabetic";
+  // Match CSS flex + line-height half-leading (em box top), which tracks the editor.
+  ctx.textBaseline = "middle";
   const lines = shown.split("\n");
   const lh = fontSize * (layer.lineHeight || 1.05);
-  let yTop = -(lines.length * lh) / 2;
+  let y = -((lines.length - 1) * lh) / 2;
   for (const line of lines) {
-    const m = ctx.measureText(line || " ");
-    const ascent = m.fontBoundingBoxAscent ?? m.actualBoundingBoxAscent ?? fontSize * 0.8;
-    const descent = m.fontBoundingBoxDescent ?? m.actualBoundingBoxDescent ?? fontSize * 0.2;
-    const baseline = yTop + (lh - (ascent + descent)) / 2 + ascent;
-    paintCanvasText(ctx, line, 0, baseline, strokeW);
-    yTop += lh;
+    paintCanvasText(ctx, line, 0, y, strokeW);
+    y += lh;
   }
 }
 
@@ -931,7 +979,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
           }
         } else if (layer.kind === "text") {
           if (document.fonts?.ready) await document.fonts.ready;
-          drawTextLayer(ctx, layer);
+          await drawTextLayerExport(ctx, layer, w, h);
         }
         ctx.restore();
       }
@@ -1128,6 +1176,7 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                     <div
                       key={layer.id}
                       className={`thumb-layer${selectedId === layer.id ? " selected" : ""}${layer.locked ? " locked" : ""}`}
+                      data-layer-id={layer.id}
                       style={{
                         left: `${layer.x * 100}%`,
                         top: `${layer.y * 100}%`,
