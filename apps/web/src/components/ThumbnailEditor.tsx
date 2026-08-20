@@ -1294,308 +1294,45 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
               </div>
             </section>
 
-            <section className="thumb-side-block">
-              <div className="thumb-side-heading">
-                <h3>Sahne</h3>
-                <button
-                  type="button"
-                  className="thumb-reset"
-                  onClick={() => {
-                    setBrightness(100);
-                    setContrast(100);
-                    setSaturate(100);
-                    setFlipH(false);
-                  }}
-                >
-                  Sıfırla
-                </button>
-              </div>
-              <div className="thumb-slider-stack">
-                <label className="thumb-slider">
-                  <span>
-                    Parlaklık <em>{brightness}%</em>
-                  </span>
-                  <input
-                    type="range"
-                    min={40}
-                    max={160}
-                    value={brightness}
-                    title="Çift tık: varsayılan"
-                    onChange={(e) => setBrightness(Number(e.target.value))}
-                    onDoubleClick={(e) => {
-                      e.preventDefault();
-                      setBrightness(100);
-                    }}
-                  />
-                </label>
-                <label className="thumb-slider">
-                  <span>
-                    Kontrast <em>{contrast}%</em>
-                  </span>
-                  <input
-                    type="range"
-                    min={40}
-                    max={180}
-                    value={contrast}
-                    title="Çift tık: varsayılan"
-                    onChange={(e) => setContrast(Number(e.target.value))}
-                    onDoubleClick={(e) => {
-                      e.preventDefault();
-                      setContrast(100);
-                    }}
-                  />
-                </label>
-                <label className="thumb-slider">
-                  <span>
-                    Doygunluk <em>{saturate}%</em>
-                  </span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={220}
-                    value={saturate}
-                    title="Çift tık: varsayılan"
-                    onChange={(e) => setSaturate(Number(e.target.value))}
-                    onDoubleClick={(e) => {
-                      e.preventDefault();
-                      setSaturate(100);
-                    }}
-                  />
-                </label>
-              </div>
-            </section>
-
-            {hasFrame ? (
-              <section className="thumb-side-block">
+            {selected ? (
+              <section className="thumb-side-block thumb-props">
                 <div className="thumb-side-heading">
-                  <h3>Çerçeve</h3>
-                  <ColorSwatch label="Renk" value={frame.color} onChange={(color) => setFrame((f) => ({ ...f, color }))} />
-                </div>
-                <div className="thumb-slider-stack">
-                  <label className="thumb-slider">
-                    <span>
-                      Kalınlık <em>{frame.width}px</em>
-                    </span>
-                    <input
-                      type="range"
-                      min={4}
-                      max={64}
-                      value={frame.width}
-                      title="Çift tık: varsayılan"
-                      onChange={(e) => setFrame((f) => ({ ...f, width: Number(e.target.value) }))}
-                      onDoubleClick={(e) => {
-                        e.preventDefault();
-                        setFrame((f) => ({ ...f, width: DEFAULT_FRAME_PREFS.width }));
-                      }}
-                    />
-                  </label>
-                  <label className="thumb-slider">
-                    <span>
-                      Yumuşaklık <em>{frame.feather}</em>
-                    </span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={80}
-                      value={frame.feather}
-                      title="Çift tık: varsayılan"
-                      onChange={(e) => setFrame((f) => ({ ...f, feather: Number(e.target.value) }))}
-                      onDoubleClick={(e) => {
-                        e.preventDefault();
-                        setFrame((f) => ({ ...f, feather: DEFAULT_FRAME_PREFS.feather }));
-                      }}
-                    />
-                  </label>
-                  {frame.glow ? (
-                    <label className="thumb-slider">
-                      <span>
-                        Parıltı <em>{frame.glowBlur}</em>
-                      </span>
-                      <input
-                        type="range"
-                        min={8}
-                        max={90}
-                        value={frame.glowBlur}
-                        title="Çift tık: varsayılan"
-                        onChange={(e) => setFrame((f) => ({ ...f, glowBlur: Number(e.target.value) }))}
-                        onDoubleClick={(e) => {
-                          e.preventDefault();
-                          setFrame((f) => ({ ...f, glowBlur: DEFAULT_FRAME_PREFS.glowBlur }));
-                        }}
-                      />
-                    </label>
-                  ) : null}
-                </div>
-                <label className="thumb-chip">
-                  <input type="checkbox" checked={frame.glow} onChange={(e) => setFrame((f) => ({ ...f, glow: e.target.checked }))} />
-                  Parıltı açık
-                </label>
-              </section>
-            ) : null}
-
-            <section className="thumb-layer-pane">
-              <div className="thumb-side-heading">
-                <h3>
-                  {selected
-                    ? selected.kind === "text"
+                  <h3>
+                    {selected.kind === "text"
                       ? "Metin"
                       : selected.kind === "image"
                         ? "Görsel"
                         : selected.kind === "frame"
-                          ? "Çerçeve katmanı"
-                          : "Şekil"
-                    : "Özellikler"}
-                </h3>
-              </div>
-              {selected ? (
-                <>
-                  {selected.kind === "frame" ? (
-                    <p className="muted thumb-pane-hint">Sırayı sol panelden veya sağ tık menüsünden değiştirin.</p>
-                  ) : null}
-                  {selected.kind === "text" ? (
-                    <>
-                      <label className="field">
-                        <span>Yazı · çift tıkla sahneye</span>
-                        <textarea rows={2} value={selected.text} onChange={(e) => patchLayer(selected.id, { text: e.target.value })} />
+                          ? "Çerçeve"
+                          : "Şekil"}
+                  </h3>
+                  <button type="button" className="thumb-reset" onClick={() => { setSelectedId(null); setEditingId(null); }}>
+                    Sahne
+                  </button>
+                </div>
+
+                {selected.kind === "text" ? (
+                  <>
+                    <label className="field thumb-prop-field">
+                      <span>Yazı</span>
+                      <textarea rows={2} value={selected.text} onChange={(e) => patchLayer(selected.id, { text: e.target.value })} />
+                    </label>
+
+                    <div className="thumb-prop-group">
+                      <p className="thumb-prop-label">Stil</p>
+                      <label className="field thumb-prop-field">
+                        <span>Font</span>
+                        <select value={selected.font} onChange={(e) => patchLayer(selected.id, { font: e.target.value })}>
+                          {FONTS.map((f) => (
+                            <option key={f.id} value={f.value}>
+                              {f.label}
+                            </option>
+                          ))}
+                        </select>
                       </label>
-                      <div className="thumb-fx-grid">
-                        <label className="field">
-                          <span>Font</span>
-                          <select value={selected.font} onChange={(e) => patchLayer(selected.id, { font: e.target.value })}>
-                            {FONTS.map((f) => (
-                              <option key={f.id} value={f.value}>
-                                {f.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="field">
-                          <span>Punto {Math.round(selected.fontSize)}</span>
-                          <input
-                            type="range"
-                            min={18}
-                            max={360}
-                            value={Math.round(selected.fontSize)}
-                            title="Çift tık: varsayılan"
-                            onChange={(e) => patchLayer(selected.id, { fontSize: Number(e.target.value) })}
-                            onDoubleClick={(e) => {
-                              e.preventDefault();
-                              patchLayer(selected.id, { fontSize: Math.round(0.2 * YT_H * 0.68) });
-                            }}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Oval {Math.round(selected.curve * 100)}</span>
-                          <input
-                            type="range"
-                            min={-100}
-                            max={100}
-                            value={Math.round(selected.curve * 100)}
-                            title="Çift tık: varsayılan"
-                            onChange={(e) => patchLayer(selected.id, { curve: Number(e.target.value) / 100 })}
-                            onDoubleClick={(e) => {
-                              e.preventDefault();
-                              patchLayer(selected.id, { curve: DEFAULT_TEXT_PREFS.curve });
-                            }}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Kontur {selected.strokeW}px</span>
-                          <input
-                            type="range"
-                            min={0}
-                            max={28}
-                            value={selected.strokeW}
-                            title="Çift tık: varsayılan"
-                            onChange={(e) => patchLayer(selected.id, { strokeW: Number(e.target.value) })}
-                            onDoubleClick={(e) => {
-                              e.preventDefault();
-                              patchLayer(selected.id, { strokeW: DEFAULT_TEXT_PREFS.strokeW });
-                            }}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Aralık {selected.letterSpacing}</span>
-                          <input
-                            type="range"
-                            min={-6}
-                            max={24}
-                            value={selected.letterSpacing}
-                            title="Çift tık: varsayılan"
-                            onChange={(e) => patchLayer(selected.id, { letterSpacing: Number(e.target.value) })}
-                            onDoubleClick={(e) => {
-                              e.preventDefault();
-                              patchLayer(selected.id, { letterSpacing: DEFAULT_TEXT_PREFS.letterSpacing });
-                            }}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Satır {selected.lineHeight.toFixed(2)}</span>
-                          <input
-                            type="range"
-                            min={70}
-                            max={160}
-                            value={Math.round(selected.lineHeight * 100)}
-                            title="Çift tık: varsayılan"
-                            onChange={(e) => patchLayer(selected.id, { lineHeight: Number(e.target.value) / 100 })}
-                            onDoubleClick={(e) => {
-                              e.preventDefault();
-                              patchLayer(selected.id, { lineHeight: DEFAULT_TEXT_PREFS.lineHeight });
-                            }}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Gölge yumuşak {selected.shadowBlur}</span>
-                          <input
-                            type="range"
-                            min={0}
-                            max={40}
-                            value={selected.shadowBlur}
-                            title="Çift tık: varsayılan"
-                            onChange={(e) => patchLayer(selected.id, { shadowBlur: Number(e.target.value), shadowOn: true })}
-                            onDoubleClick={(e) => {
-                              e.preventDefault();
-                              patchLayer(selected.id, { shadowBlur: DEFAULT_TEXT_PREFS.shadowBlur });
-                            }}
-                          />
-                        </label>
-                      </div>
-                      <div className="thumb-inline-row">
+                      <div className="thumb-color-row">
                         <ColorSwatch label="Dolgu" value={selected.color} onChange={(color) => patchLayer(selected.id, { color })} />
                         <ColorSwatch label="Kontur" value={selected.stroke} onChange={(stroke) => patchLayer(selected.id, { stroke })} />
-                        <ColorSwatch label="Gölge" value={selected.shadowColor} onChange={(shadowColor) => patchLayer(selected.id, { shadowColor, shadowOn: true })} />
-                      </div>
-                      <div className="thumb-fx-grid">
-                        <label className="field">
-                          <span>Gölge X {selected.shadowX}</span>
-                          <input
-                            type="range"
-                            min={-20}
-                            max={20}
-                            value={selected.shadowX}
-                            title="Çift tık: varsayılan"
-                            onChange={(e) => patchLayer(selected.id, { shadowX: Number(e.target.value) })}
-                            onDoubleClick={(e) => {
-                              e.preventDefault();
-                              patchLayer(selected.id, { shadowX: DEFAULT_TEXT_PREFS.shadowX });
-                            }}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Gölge Y {selected.shadowY}</span>
-                          <input
-                            type="range"
-                            min={-20}
-                            max={20}
-                            value={selected.shadowY}
-                            title="Çift tık: varsayılan"
-                            onChange={(e) => patchLayer(selected.id, { shadowY: Number(e.target.value) })}
-                            onDoubleClick={(e) => {
-                              e.preventDefault();
-                              patchLayer(selected.id, { shadowY: DEFAULT_TEXT_PREFS.shadowY });
-                            }}
-                          />
-                        </label>
                       </div>
                       <div className="thumb-checks">
                         <label className="check-row">
@@ -1610,131 +1347,533 @@ export function ThumbnailEditor({ channelSlug, baseSrc, initial, onClose, onAppl
                           <input type="checkbox" checked={selected.uppercase} onChange={(e) => patchLayer(selected.id, { uppercase: e.target.checked })} />
                           BÜYÜK
                         </label>
-                        <label className="check-row">
-                          <input type="checkbox" checked={selected.shadowOn} onChange={(e) => patchLayer(selected.id, { shadowOn: e.target.checked })} />
-                          Gölge
-                        </label>
                       </div>
-                    </>
-                  ) : null}
-                  {selected.kind === "image" ? (
-                    <>
-                      <div className="thumb-checks">
-                        <label className="check-row">
-                          <input type="checkbox" checked={selected.imgBorderOn} onChange={(e) => patchLayer(selected.id, { imgBorderOn: e.target.checked })} />
-                          PNG çerçeve
+                    </div>
+
+                    <div className="thumb-prop-group">
+                      <p className="thumb-prop-label">Boyut</p>
+                      <div className="thumb-slider-stack">
+                        <label className="thumb-slider">
+                          <span>
+                            Punto <em>{Math.round(selected.fontSize)}</em>
+                          </span>
+                          <input
+                            type="range"
+                            min={18}
+                            max={360}
+                            value={Math.round(selected.fontSize)}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { fontSize: Number(e.target.value) })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { fontSize: Math.round(0.2 * YT_H * 0.68) });
+                            }}
+                          />
                         </label>
-                        <label className="check-row">
-                          <input type="checkbox" checked={selected.imgGlowOn} onChange={(e) => patchLayer(selected.id, { imgGlowOn: e.target.checked })} />
-                          Parıltı
-                        </label>
-                      </div>
-                      <div className="thumb-inline-row">
-                        <ColorSwatch label="Çerçeve" value={selected.imgBorderColor} onChange={(imgBorderColor) => patchLayer(selected.id, { imgBorderColor })} />
-                        <ColorSwatch label="Parıltı" value={selected.imgGlowColor} onChange={(imgGlowColor) => patchLayer(selected.id, { imgGlowColor })} />
-                      </div>
-                      <div className="thumb-fx-grid">
-                        <label className="field">
-                          <span>Kenar {selected.imgBorderW}px</span>
+                        <label className="thumb-slider">
+                          <span>
+                            Kontur <em>{selected.strokeW}px</em>
+                          </span>
                           <input
                             type="range"
                             min={0}
                             max={28}
-                            value={selected.imgBorderW}
+                            value={selected.strokeW}
                             title="Çift tık: varsayılan"
-                            onChange={(e) => patchLayer(selected.id, { imgBorderW: Number(e.target.value), imgBorderOn: true })}
+                            onChange={(e) => patchLayer(selected.id, { strokeW: Number(e.target.value) })}
                             onDoubleClick={(e) => {
                               e.preventDefault();
-                              patchLayer(selected.id, { imgBorderW: DEFAULT_IMAGE_PREFS.imgBorderW });
+                              patchLayer(selected.id, { strokeW: DEFAULT_TEXT_PREFS.strokeW });
                             }}
                           />
                         </label>
-                        <label className="field">
-                          <span>Yumuşak parıltı {selected.imgGlowBlur}</span>
+                        <label className="thumb-slider">
+                          <span>
+                            Harf aralığı <em>{selected.letterSpacing}</em>
+                          </span>
                           <input
                             type="range"
-                            min={4}
-                            max={80}
-                            value={selected.imgGlowBlur}
+                            min={-6}
+                            max={24}
+                            value={selected.letterSpacing}
                             title="Çift tık: varsayılan"
-                            onChange={(e) => patchLayer(selected.id, { imgGlowBlur: Number(e.target.value), imgGlowOn: true })}
+                            onChange={(e) => patchLayer(selected.id, { letterSpacing: Number(e.target.value) })}
                             onDoubleClick={(e) => {
                               e.preventDefault();
-                              patchLayer(selected.id, { imgGlowBlur: DEFAULT_IMAGE_PREFS.imgGlowBlur });
+                              patchLayer(selected.id, { letterSpacing: DEFAULT_TEXT_PREFS.letterSpacing });
+                            }}
+                          />
+                        </label>
+                        <label className="thumb-slider">
+                          <span>
+                            Satır <em>{selected.lineHeight.toFixed(2)}</em>
+                          </span>
+                          <input
+                            type="range"
+                            min={70}
+                            max={160}
+                            value={Math.round(selected.lineHeight * 100)}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { lineHeight: Number(e.target.value) / 100 })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { lineHeight: DEFAULT_TEXT_PREFS.lineHeight });
+                            }}
+                          />
+                        </label>
+                        <label className="thumb-slider">
+                          <span>
+                            Eğri <em>{Math.round(selected.curve * 100)}</em>
+                          </span>
+                          <input
+                            type="range"
+                            min={-100}
+                            max={100}
+                            value={Math.round(selected.curve * 100)}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => patchLayer(selected.id, { curve: Number(e.target.value) / 100 })}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              patchLayer(selected.id, { curve: DEFAULT_TEXT_PREFS.curve });
                             }}
                           />
                         </label>
                       </div>
-                    </>
-                  ) : null}
-                  {selected.kind === "shape" ? (
-                    <div className="thumb-fx-grid">
-                      <label className="field">
-                        <span>Şekil</span>
-                        <select value={selected.shape} onChange={(e) => patchLayer(selected.id, { shape: e.target.value as "rect" | "ellipse" })}>
-                          <option value="rect">Dikdörtgen</option>
-                          <option value="ellipse">Elips</option>
-                        </select>
+                    </div>
+
+                    <div className="thumb-prop-group">
+                      <div className="thumb-side-heading">
+                        <p className="thumb-prop-label">Gölge</p>
+                        <label className="thumb-chip compact">
+                          <input type="checkbox" checked={selected.shadowOn} onChange={(e) => patchLayer(selected.id, { shadowOn: e.target.checked })} />
+                          Açık
+                        </label>
+                      </div>
+                      {selected.shadowOn ? (
+                        <>
+                          <div className="thumb-color-row">
+                            <ColorSwatch label="Renk" value={selected.shadowColor} onChange={(shadowColor) => patchLayer(selected.id, { shadowColor, shadowOn: true })} />
+                          </div>
+                          <div className="thumb-slider-stack">
+                            <label className="thumb-slider">
+                              <span>
+                                Yumuşaklık <em>{selected.shadowBlur}</em>
+                              </span>
+                              <input
+                                type="range"
+                                min={0}
+                                max={40}
+                                value={selected.shadowBlur}
+                                title="Çift tık: varsayılan"
+                                onChange={(e) => patchLayer(selected.id, { shadowBlur: Number(e.target.value), shadowOn: true })}
+                                onDoubleClick={(e) => {
+                                  e.preventDefault();
+                                  patchLayer(selected.id, { shadowBlur: DEFAULT_TEXT_PREFS.shadowBlur });
+                                }}
+                              />
+                            </label>
+                            <label className="thumb-slider">
+                              <span>
+                                X <em>{selected.shadowX}</em>
+                              </span>
+                              <input
+                                type="range"
+                                min={-20}
+                                max={20}
+                                value={selected.shadowX}
+                                title="Çift tık: varsayılan"
+                                onChange={(e) => patchLayer(selected.id, { shadowX: Number(e.target.value) })}
+                                onDoubleClick={(e) => {
+                                  e.preventDefault();
+                                  patchLayer(selected.id, { shadowX: DEFAULT_TEXT_PREFS.shadowX });
+                                }}
+                              />
+                            </label>
+                            <label className="thumb-slider">
+                              <span>
+                                Y <em>{selected.shadowY}</em>
+                              </span>
+                              <input
+                                type="range"
+                                min={-20}
+                                max={20}
+                                value={selected.shadowY}
+                                title="Çift tık: varsayılan"
+                                onChange={(e) => patchLayer(selected.id, { shadowY: Number(e.target.value) })}
+                                onDoubleClick={(e) => {
+                                  e.preventDefault();
+                                  patchLayer(selected.id, { shadowY: DEFAULT_TEXT_PREFS.shadowY });
+                                }}
+                              />
+                            </label>
+                          </div>
+                        </>
+                      ) : null}
+                    </div>
+                  </>
+                ) : null}
+
+                {selected.kind === "image" ? (
+                  <>
+                    <div className="thumb-prop-group">
+                      <p className="thumb-prop-label">Kenar</p>
+                      <label className="thumb-chip">
+                        <input type="checkbox" checked={selected.imgBorderOn} onChange={(e) => patchLayer(selected.id, { imgBorderOn: e.target.checked })} />
+                        PNG çerçeve
                       </label>
+                      {selected.imgBorderOn ? (
+                        <>
+                          <div className="thumb-color-row">
+                            <ColorSwatch label="Renk" value={selected.imgBorderColor} onChange={(imgBorderColor) => patchLayer(selected.id, { imgBorderColor })} />
+                          </div>
+                          <div className="thumb-slider-stack">
+                            <label className="thumb-slider">
+                              <span>
+                                Kalınlık <em>{selected.imgBorderW}px</em>
+                              </span>
+                              <input
+                                type="range"
+                                min={0}
+                                max={28}
+                                value={selected.imgBorderW}
+                                title="Çift tık: varsayılan"
+                                onChange={(e) => patchLayer(selected.id, { imgBorderW: Number(e.target.value), imgBorderOn: true })}
+                                onDoubleClick={(e) => {
+                                  e.preventDefault();
+                                  patchLayer(selected.id, { imgBorderW: DEFAULT_IMAGE_PREFS.imgBorderW });
+                                }}
+                              />
+                            </label>
+                          </div>
+                        </>
+                      ) : null}
+                    </div>
+                    <div className="thumb-prop-group">
+                      <p className="thumb-prop-label">Parıltı</p>
+                      <label className="thumb-chip">
+                        <input type="checkbox" checked={selected.imgGlowOn} onChange={(e) => patchLayer(selected.id, { imgGlowOn: e.target.checked })} />
+                        Parıltı açık
+                      </label>
+                      {selected.imgGlowOn ? (
+                        <>
+                          <div className="thumb-color-row">
+                            <ColorSwatch label="Renk" value={selected.imgGlowColor} onChange={(imgGlowColor) => patchLayer(selected.id, { imgGlowColor })} />
+                          </div>
+                          <div className="thumb-slider-stack">
+                            <label className="thumb-slider">
+                              <span>
+                                Yumuşaklık <em>{selected.imgGlowBlur}</em>
+                              </span>
+                              <input
+                                type="range"
+                                min={4}
+                                max={80}
+                                value={selected.imgGlowBlur}
+                                title="Çift tık: varsayılan"
+                                onChange={(e) => patchLayer(selected.id, { imgGlowBlur: Number(e.target.value), imgGlowOn: true })}
+                                onDoubleClick={(e) => {
+                                  e.preventDefault();
+                                  patchLayer(selected.id, { imgGlowBlur: DEFAULT_IMAGE_PREFS.imgGlowBlur });
+                                }}
+                              />
+                            </label>
+                          </div>
+                        </>
+                      ) : null}
+                    </div>
+                  </>
+                ) : null}
+
+                {selected.kind === "shape" ? (
+                  <div className="thumb-prop-group">
+                    <p className="thumb-prop-label">Şekil</p>
+                    <label className="field thumb-prop-field">
+                      <span>Tür</span>
+                      <select value={selected.shape} onChange={(e) => patchLayer(selected.id, { shape: e.target.value as "rect" | "ellipse" })}>
+                        <option value="rect">Dikdörtgen</option>
+                        <option value="ellipse">Elips</option>
+                      </select>
+                    </label>
+                    <div className="thumb-color-row">
                       <ColorSwatch label="Dolgu" value={selected.fill.slice(0, 7)} onChange={(fill) => patchLayer(selected.id, { fill })} />
                     </div>
-                  ) : null}
-                  {selected.kind !== "frame" ? (
-                  <div className="thumb-fx-grid">
-                    <label className="field">
-                      <span>Döndür {selected.rotate}°</span>
-                      <input
-                        type="range"
-                        min={-180}
-                        max={180}
-                        value={selected.rotate}
-                        title="Çift tık: varsayılan"
-                        onChange={(e) => patchLayer(selected.id, { rotate: Number(e.target.value) })}
-                        onDoubleClick={(e) => {
-                          e.preventDefault();
-                          patchLayer(selected.id, { rotate: 0 });
-                        }}
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Opaklık {Math.round(selected.opacity * 100)}%</span>
-                      <input
-                        type="range"
-                        min={20}
-                        max={100}
-                        value={Math.round(selected.opacity * 100)}
-                        title="Çift tık: varsayılan"
-                        onChange={(e) => patchLayer(selected.id, { opacity: Number(e.target.value) / 100 })}
-                        onDoubleClick={(e) => {
-                          e.preventDefault();
-                          patchLayer(selected.id, { opacity: 1 });
-                        }}
-                      />
-                    </label>
                   </div>
-                  ) : null}
-                  <div className="thumb-action-row">
-                    <button type="button" className="btn ghost" onClick={() => moveLayer(selected.id, "front")}>
-                      Üste
-                    </button>
-                    <button type="button" className="btn ghost" onClick={() => moveLayer(selected.id, "back")}>
-                      Alta
-                    </button>
-                    {selected.kind !== "frame" ? (
+                ) : null}
+
+                {selected.kind === "frame" ? (
+                  <>
+                    <div className="thumb-color-row">
+                      <ColorSwatch label="Renk" value={frame.color} onChange={(color) => setFrame((f) => ({ ...f, color }))} />
+                    </div>
+                    <div className="thumb-slider-stack">
+                      <label className="thumb-slider">
+                        <span>
+                          Kalınlık <em>{frame.width}px</em>
+                        </span>
+                        <input
+                          type="range"
+                          min={4}
+                          max={64}
+                          value={frame.width}
+                          title="Çift tık: varsayılan"
+                          onChange={(e) => setFrame((f) => ({ ...f, width: Number(e.target.value) }))}
+                          onDoubleClick={(e) => {
+                            e.preventDefault();
+                            setFrame((f) => ({ ...f, width: DEFAULT_FRAME_PREFS.width }));
+                          }}
+                        />
+                      </label>
+                      <label className="thumb-slider">
+                        <span>
+                          Yumuşaklık <em>{frame.feather}</em>
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={80}
+                          value={frame.feather}
+                          title="Çift tık: varsayılan"
+                          onChange={(e) => setFrame((f) => ({ ...f, feather: Number(e.target.value) }))}
+                          onDoubleClick={(e) => {
+                            e.preventDefault();
+                            setFrame((f) => ({ ...f, feather: DEFAULT_FRAME_PREFS.feather }));
+                          }}
+                        />
+                      </label>
+                      {frame.glow ? (
+                        <label className="thumb-slider">
+                          <span>
+                            Parıltı <em>{frame.glowBlur}</em>
+                          </span>
+                          <input
+                            type="range"
+                            min={8}
+                            max={90}
+                            value={frame.glowBlur}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => setFrame((f) => ({ ...f, glowBlur: Number(e.target.value) }))}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              setFrame((f) => ({ ...f, glowBlur: DEFAULT_FRAME_PREFS.glowBlur }));
+                            }}
+                          />
+                        </label>
+                      ) : null}
+                    </div>
+                    <label className="thumb-chip">
+                      <input type="checkbox" checked={frame.glow} onChange={(e) => setFrame((f) => ({ ...f, glow: e.target.checked }))} />
+                      Parıltı açık
+                    </label>
+                  </>
+                ) : null}
+
+                {selected.kind !== "frame" ? (
+                  <div className="thumb-prop-group">
+                    <p className="thumb-prop-label">Konum</p>
+                    <div className="thumb-slider-stack">
+                      <label className="thumb-slider">
+                        <span>
+                          Döndür <em>{selected.rotate}°</em>
+                        </span>
+                        <input
+                          type="range"
+                          min={-180}
+                          max={180}
+                          value={selected.rotate}
+                          title="Çift tık: varsayılan"
+                          onChange={(e) => patchLayer(selected.id, { rotate: Number(e.target.value) })}
+                          onDoubleClick={(e) => {
+                            e.preventDefault();
+                            patchLayer(selected.id, { rotate: 0 });
+                          }}
+                        />
+                      </label>
+                      <label className="thumb-slider">
+                        <span>
+                          Opaklık <em>{Math.round(selected.opacity * 100)}%</em>
+                        </span>
+                        <input
+                          type="range"
+                          min={20}
+                          max={100}
+                          value={Math.round(selected.opacity * 100)}
+                          title="Çift tık: varsayılan"
+                          onChange={(e) => patchLayer(selected.id, { opacity: Number(e.target.value) / 100 })}
+                          onDoubleClick={(e) => {
+                            e.preventDefault();
+                            patchLayer(selected.id, { opacity: 1 });
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="thumb-action-row">
+                  <button type="button" className="btn ghost" onClick={() => moveLayer(selected.id, "front")}>
+                    Üste
+                  </button>
+                  <button type="button" className="btn ghost" onClick={() => moveLayer(selected.id, "back")}>
+                    Alta
+                  </button>
+                  {selected.kind !== "frame" ? (
                     <button type="button" className="btn ghost" onClick={() => duplicateLayer(selected.id)}>
                       Kopyala
                     </button>
-                    ) : null}
-                    <button type="button" className="btn ghost danger" onClick={() => removeLayer(selected.id)}>
-                      Sil
+                  ) : null}
+                  <button type="button" className="btn ghost danger" onClick={() => removeLayer(selected.id)}>
+                    Sil
+                  </button>
+                </div>
+                {error ? <p className="form-message">{error}</p> : null}
+              </section>
+            ) : (
+              <>
+                <section className="thumb-side-block">
+                  <div className="thumb-side-heading">
+                    <h3>Sahne</h3>
+                    <button
+                      type="button"
+                      className="thumb-reset"
+                      onClick={() => {
+                        setBrightness(100);
+                        setContrast(100);
+                        setSaturate(100);
+                        setFlipH(false);
+                      }}
+                    >
+                      Sıfırla
                     </button>
                   </div>
-                </>
-              ) : (
-                <p className="muted thumb-pane-hint">Katman seçin. Kapatınca taslak kalır; kapak yalnızca uygula ile değişir.</p>
-              )}
-              {error ? <p className="form-message">{error}</p> : null}
-            </section>
+                  <div className="thumb-slider-stack">
+                    <label className="thumb-slider">
+                      <span>
+                        Parlaklık <em>{brightness}%</em>
+                      </span>
+                      <input
+                        type="range"
+                        min={40}
+                        max={160}
+                        value={brightness}
+                        title="Çift tık: varsayılan"
+                        onChange={(e) => setBrightness(Number(e.target.value))}
+                        onDoubleClick={(e) => {
+                          e.preventDefault();
+                          setBrightness(100);
+                        }}
+                      />
+                    </label>
+                    <label className="thumb-slider">
+                      <span>
+                        Kontrast <em>{contrast}%</em>
+                      </span>
+                      <input
+                        type="range"
+                        min={40}
+                        max={180}
+                        value={contrast}
+                        title="Çift tık: varsayılan"
+                        onChange={(e) => setContrast(Number(e.target.value))}
+                        onDoubleClick={(e) => {
+                          e.preventDefault();
+                          setContrast(100);
+                        }}
+                      />
+                    </label>
+                    <label className="thumb-slider">
+                      <span>
+                        Doygunluk <em>{saturate}%</em>
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={220}
+                        value={saturate}
+                        title="Çift tık: varsayılan"
+                        onChange={(e) => setSaturate(Number(e.target.value))}
+                        onDoubleClick={(e) => {
+                          e.preventDefault();
+                          setSaturate(100);
+                        }}
+                      />
+                    </label>
+                  </div>
+                </section>
+
+                {hasFrame ? (
+                  <section className="thumb-side-block">
+                    <div className="thumb-side-heading">
+                      <h3>Çerçeve</h3>
+                      <ColorSwatch label="Renk" value={frame.color} onChange={(color) => setFrame((f) => ({ ...f, color }))} />
+                    </div>
+                    <div className="thumb-slider-stack">
+                      <label className="thumb-slider">
+                        <span>
+                          Kalınlık <em>{frame.width}px</em>
+                        </span>
+                        <input
+                          type="range"
+                          min={4}
+                          max={64}
+                          value={frame.width}
+                          title="Çift tık: varsayılan"
+                          onChange={(e) => setFrame((f) => ({ ...f, width: Number(e.target.value) }))}
+                          onDoubleClick={(e) => {
+                            e.preventDefault();
+                            setFrame((f) => ({ ...f, width: DEFAULT_FRAME_PREFS.width }));
+                          }}
+                        />
+                      </label>
+                      <label className="thumb-slider">
+                        <span>
+                          Yumuşaklık <em>{frame.feather}</em>
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={80}
+                          value={frame.feather}
+                          title="Çift tık: varsayılan"
+                          onChange={(e) => setFrame((f) => ({ ...f, feather: Number(e.target.value) }))}
+                          onDoubleClick={(e) => {
+                            e.preventDefault();
+                            setFrame((f) => ({ ...f, feather: DEFAULT_FRAME_PREFS.feather }));
+                          }}
+                        />
+                      </label>
+                      {frame.glow ? (
+                        <label className="thumb-slider">
+                          <span>
+                            Parıltı <em>{frame.glowBlur}</em>
+                          </span>
+                          <input
+                            type="range"
+                            min={8}
+                            max={90}
+                            value={frame.glowBlur}
+                            title="Çift tık: varsayılan"
+                            onChange={(e) => setFrame((f) => ({ ...f, glowBlur: Number(e.target.value) }))}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              setFrame((f) => ({ ...f, glowBlur: DEFAULT_FRAME_PREFS.glowBlur }));
+                            }}
+                          />
+                        </label>
+                      ) : null}
+                    </div>
+                    <label className="thumb-chip">
+                      <input type="checkbox" checked={frame.glow} onChange={(e) => setFrame((f) => ({ ...f, glow: e.target.checked }))} />
+                      Parıltı açık
+                    </label>
+                  </section>
+                ) : null}
+
+                <section className="thumb-side-block thumb-props-empty">
+                  <p className="muted thumb-pane-hint">Katman seçince burada ayarları görünür. Boş alana tıklayınca sahne ayarları geri gelir.</p>
+                  {error ? <p className="form-message">{error}</p> : null}
+                </section>
+              </>
+            )}
             </div>
           </aside>
         </div>

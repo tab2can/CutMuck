@@ -2882,7 +2882,67 @@ body.is-resizing-panels * {
   user-select: none;
 }
 
+.thumb-chip.compact {
+  margin-top: 0;
+  padding: 4px 8px;
+  font-size: 0.72rem;
+}
+
 .thumb-chip input {
+  margin: 0;
+}
+
+.thumb-props {
+  flex: 1 1 auto;
+}
+
+.thumb-props-empty {
+  flex: 1 1 auto;
+}
+
+.thumb-prop-group {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+}
+
+.thumb-prop-group:first-of-type {
+  margin-top: 4px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.thumb-prop-label {
+  margin: 0 0 8px;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.thumb-side-heading .thumb-prop-label {
+  margin: 0;
+}
+
+.thumb-prop-field {
+  margin-top: 0;
+}
+
+.thumb-prop-field + .thumb-prop-field,
+.thumb-prop-field + .thumb-color-row,
+.thumb-prop-field + .thumb-checks {
+  margin-top: 10px;
+}
+
+.thumb-color-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin: 8px 0 0;
+}
+
+.thumb-color-row .cm-color {
   margin: 0;
 }
 
