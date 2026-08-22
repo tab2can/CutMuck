@@ -144,10 +144,22 @@ def ensure_clip_duration(path: Path, expected: float, *, label: str = "kesit") -
     return path
 
 
-def prepare_for_youtube(path: Path, expected: float | None = None) -> Path:
-    """Remux with genpts+faststart; re-encode if timestamps are still bad.
+def _youtube_fps(path: Path) -> float:
+    """Snap probed FPS to a stable CFR for YouTube (avoids Kick VFR slow-mo)."""
+    fps = probe_fps(path)
+    if not fps or fps < 15 or fps > 120:
+        return 30.0
+    for target in (60.0, 50.0, 30.0, 25.0, 24.0):
+        if abs(fps - target) <= 1.6:
+            return target
+    return round(float(fps), 3)
 
-    Keeps stream-copy when possible (fast). Called right before YouTube upload.
+
+def prepare_for_youtube(path: Path, expected: float | None = None) -> Path:
+    """Force CFR H264/AAC so Kick HLS remuxes don't upload as slow-mo video.
+
+    Stream-copy preserves broken VFR/PTS from TS→MP4: audio plays normal, video
+    crawls. Always light-reencode with aligned A/V timestamps before YouTube.
     """
     if not path.exists() or path.stat().st_size < 1024:
         raise FFmpegError("YouTube için dosya yok veya boş")
@@ -162,85 +174,73 @@ def prepare_for_youtube(path: Path, expected: float | None = None) -> Path:
         except OSError:
             pass
 
-    cmd_copy = [
-        _ffmpeg(),
-        "-y",
-        "-fflags",
-        "+genpts",
-        "-i",
-        str(path),
-        "-c",
-        "copy",
-        "-movflags",
-        "+faststart",
-        str(remuxed),
-    ]
-    try:
-        run_ffmpeg(cmd_copy)
-        ok = remuxed.exists() and remuxed.stat().st_size > 1024
-    except FFmpegError:
-        ok = False
-
-    if ok and expected and expected > 0.5:
-        try:
-            ensure_clip_duration(remuxed, expected, label="YouTube remux")
-        except FFmpegError:
-            ok = False
-
-    if ok:
-        try:
-            path.unlink()
-        except OSError:
-            pass
-        remuxed.replace(path)
-        return path
-
-    if remuxed.exists():
-        try:
-            remuxed.unlink()
-        except OSError:
-            pass
-
-    # Full re-encode — YouTube-safe H264/AAC
+    fps = _youtube_fps(path)
     dur = expected
     if not dur or dur < 0.5:
         try:
             dur = probe_duration(path)
         except FFmpegError:
             dur = None
-    cmd_enc = [
-        _ffmpeg(),
-        "-y",
-        "-fflags",
-        "+genpts",
-        "-i",
-        str(path),
-    ]
-    if dur and dur > 0.5:
-        cmd_enc.extend(["-t", f"{dur:.3f}"])
-    cmd_enc.extend(
-        [
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "23",
-            *_x264_thread_args(),
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            "-movflags",
-            "+faststart",
-            str(remuxed),
+
+    # Prefer GPU when available, then ultrafast x264
+    encoders = _encoder_candidates()
+    last_err = ""
+    for enc in encoders:
+        cmd = [
+            _ffmpeg(),
+            "-y",
+            "-fflags",
+            "+genpts+discardcorrupt",
+            "-i",
+            str(path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
         ]
-    )
-    run_ffmpeg(cmd_enc, duration=dur)
-    if not remuxed.exists() or remuxed.stat().st_size < 1024:
-        raise FFmpegError("YouTube encode başarısız")
+        if dur and dur > 0.5:
+            cmd.extend(["-t", f"{dur:.3f}"])
+        cmd.extend(
+            [
+                "-vf",
+                f"fps={fps:.5f}".rstrip("0").rstrip(".") + ",setpts=PTS-STARTPTS",
+                "-af",
+                "asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0",
+                "-c:v",
+                *enc,
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-shortest",
+                "-movflags",
+                "+faststart",
+                str(remuxed),
+            ]
+        )
+        try:
+            if remuxed.exists():
+                remuxed.unlink()
+            run_ffmpeg(cmd, duration=dur)
+            if remuxed.exists() and remuxed.stat().st_size > 1024:
+                break
+        except FFmpegError as exc:
+            last_err = str(exc)
+            if remuxed.exists():
+                try:
+                    remuxed.unlink()
+                except OSError:
+                    pass
+            continue
+    else:
+        raise FFmpegError(last_err or "YouTube encode başarısız")
+
     try:
         path.unlink()
     except OSError:

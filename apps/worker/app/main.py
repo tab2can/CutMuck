@@ -1306,6 +1306,18 @@ async def _ensure_segment_file(
         await database.update_job(db, job_id, status="error", error=str(exc))
         raise HTTPException(400, str(exc)) from exc
 
+    # Local download / cut finalize: fix Kick HLS VFR so A/V stay in sync
+    if finalize:
+        try:
+            expected_out = overlay_output_duration(clip_len, ov) if ov else clip_len
+            _sync_job_progress(job_id, 80, "exporting")
+            path = await asyncio.to_thread(prepare_for_youtube, Path(path), expected_out)
+            tool = f"{tool}+sync"
+            _sync_job_progress(job_id, 95, "exporting")
+        except FFmpegError as exc:
+            await database.update_job(db, job_id, status="error", error=str(exc))
+            raise HTTPException(400, str(exc)) from exc
+
     meta.update(
         {
             "start_sec": start_sec,
