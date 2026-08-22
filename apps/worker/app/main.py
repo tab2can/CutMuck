@@ -1211,11 +1211,13 @@ async def _ensure_segment_file(
     *,
     finalize: bool = True,
     hold_heavy: bool = True,
+    for_youtube: bool = False,
 ) -> dict[str, Any]:
     job_id = job["id"]
     meta = job.get("meta") or {}
     dest = settings.media_dir / f"{job_id}_cut.mp4"
     ov = overlays if overlays is not None else list(meta.get("overlays") or [])
+    synced = "+sync" in str(meta.get("export_tool") or "")
     # Reuse existing cut if same range + overlays
     if (
         job.get("cut_path")
@@ -1223,6 +1225,7 @@ async def _ensure_segment_file(
         and abs(float(meta.get("start_sec", -1)) - start_sec) < 0.05
         and abs(float(meta.get("end_sec", -1)) - end_sec) < 0.05
         and meta.get("overlays_applied") == ov
+        and (not for_youtube or synced)
     ):
         return job
 
@@ -1236,9 +1239,11 @@ async def _ensure_segment_file(
                 overlays,
                 finalize=finalize,
                 hold_heavy=False,
+                for_youtube=for_youtube,
             )
 
     clip_len = max(0.1, end_sec - start_sec)
+    expected_out = overlay_output_duration(clip_len, ov) if ov else clip_len
     await database.update_job(db, job_id, status="cutting", progress=12, error=None)
     page_url = job.get("source_url") or ""
     hls_url = meta.get("export_hls_url") or meta.get("dvr_hls_url") or meta.get("hls_url")
@@ -1283,7 +1288,7 @@ async def _ensure_segment_file(
             path = ensure_clip_duration(path, clip_len, label="kesit")
         if ov:
             def _ov_prog(frac: float) -> None:
-                _sync_job_progress(job_id, 48 + max(0.0, min(1.0, frac)) * 26, "exporting")
+                _sync_job_progress(job_id, 48 + max(0.0, min(1.0, frac)) * 18, "exporting")
 
             _sync_job_progress(job_id, 48, "exporting")
             path = apply_overlays(
@@ -1295,9 +1300,23 @@ async def _ensure_segment_file(
                     raw_dest.unlink()
                 except OSError:
                     pass
-            _sync_job_progress(job_id, 74, "exporting")
+        elif for_youtube:
+            _sync_job_progress(job_id, 66, "exporting")
         else:
             _sync_job_progress(job_id, 74, "cutting")
+
+        if for_youtube:
+            def _prep_prog(frac: float) -> None:
+                _sync_job_progress(job_id, 66 + max(0.0, min(1.0, frac)) * 20, "exporting")
+
+            _sync_job_progress(job_id, 66, "exporting")
+            path = prepare_for_youtube(
+                path,
+                expected_out,
+                source_tool=tool,
+                on_progress=_prep_prog,
+            )
+            tool = f"{tool}+sync"
         return path, tool
 
     try:
@@ -1306,14 +1325,22 @@ async def _ensure_segment_file(
         await database.update_job(db, job_id, status="error", error=str(exc))
         raise HTTPException(400, str(exc)) from exc
 
-    # Local download / cut finalize: fix Kick HLS VFR so A/V stay in sync
-    if finalize:
+    # Local download: fix Kick HLS VFR so A/V stay in sync
+    if finalize and not for_youtube:
         try:
-            expected_out = overlay_output_duration(clip_len, ov) if ov else clip_len
-            _sync_job_progress(job_id, 80, "exporting")
-            path = await asyncio.to_thread(prepare_for_youtube, Path(path), expected_out)
+            def _prep_prog(frac: float) -> None:
+                _sync_job_progress(job_id, 74 + max(0.0, min(1.0, frac)) * 20, "exporting")
+
+            _sync_job_progress(job_id, 74, "exporting")
+            path = await asyncio.to_thread(
+                prepare_for_youtube,
+                Path(path),
+                expected_out,
+                source_tool=tool,
+                on_progress=_prep_prog,
+            )
             tool = f"{tool}+sync"
-            _sync_job_progress(job_id, 95, "exporting")
+            _sync_job_progress(job_id, 94, "exporting")
         except FFmpegError as exc:
             await database.update_job(db, job_id, status="error", error=str(exc))
             raise HTTPException(400, str(exc)) from exc
@@ -1327,11 +1354,12 @@ async def _ensure_segment_file(
             "overlays_applied": ov,
         }
     )
+    end_progress = 100 if finalize else (86 if for_youtube else 74)
     updated = await database.update_job(
         db,
         job_id,
         status="cut" if finalize else "exporting",
-        progress=100 if finalize else 74,
+        progress=end_progress,
         cut_path=str(path),
         meta=meta,
     )
@@ -1482,7 +1510,7 @@ def _cleanup_export_media(job_id: str, job: dict[str, Any] | None = None) -> Non
 
 def _sync_upload_progress(job_id: str, frac: float) -> None:
     """Best-effort progress from the upload thread (aiosqlite not usable there)."""
-    progress = round(70 + max(0.0, min(1.0, frac)) * 20, 1)
+    progress = round(88 + max(0.0, min(1.0, frac)) * 10, 1)
     _sync_job_progress(job_id, progress, "uploading")
 
 
@@ -1524,6 +1552,7 @@ async def _run_youtube_pipeline(
                     overlays=overlays,
                     finalize=False,
                     hold_heavy=False,
+                    for_youtube=True,
                 )
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
@@ -1551,20 +1580,7 @@ async def _run_youtube_pipeline(
                 return
 
             path = Path(upload_path)
-            expected = overlay_output_duration(
-                max(0.1, end_sec - start_sec), overlays or []
-            )
-            await database.update_job(db, job_id, status="exporting", progress=68, error=None)
-            try:
-                path = await asyncio.to_thread(prepare_for_youtube, path, expected)
-                job = (
-                    await database.update_job(db, job_id, cut_path=str(path)) or job
-                )
-            except FFmpegError as exc:
-                await database.update_job(db, job_id, status="error", error=str(exc))
-                return
-
-            await database.update_job(db, job_id, status="uploading", progress=70, error=None)
+            await database.update_job(db, job_id, status="uploading", progress=88, error=None)
             size = path.stat().st_size
             # Assume ~512 KiB/s worst case + 20 min slack (multi‑GB uploads)
             upload_timeout = max(1800.0, size / (512 * 1024) + 1200)

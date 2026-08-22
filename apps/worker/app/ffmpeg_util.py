@@ -144,6 +144,58 @@ def ensure_clip_duration(path: Path, expected: float, *, label: str = "kesit") -
     return path
 
 
+ProgressCb = Callable[[float], None]
+
+
+def _faststart_remux(path: Path, expected: float | None = None) -> bool:
+    """In-place remux (copy + faststart). Returns True when output looks healthy."""
+    tmp = path.with_name(f"{path.stem}_mux{path.suffix}")
+    if tmp.exists():
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    cmd = [
+        _ffmpeg(),
+        "-y",
+        "-fflags",
+        "+genpts",
+        "-i",
+        str(path),
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(tmp),
+    ]
+    try:
+        run_ffmpeg(cmd)
+    except FFmpegError:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        return False
+    if not tmp.exists() or tmp.stat().st_size < 1024:
+        return False
+    if expected and expected > 0.5:
+        try:
+            got = probe_duration(tmp)
+            if got < expected * 0.97 or got > expected * 1.05:
+                tmp.unlink(missing_ok=True)
+                return False
+        except FFmpegError:
+            tmp.unlink(missing_ok=True)
+            return False
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    tmp.replace(path)
+    return True
+
+
 def _youtube_fps(path: Path) -> float:
     """Snap probed FPS to a stable CFR for YouTube (avoids Kick VFR slow-mo)."""
     fps = probe_fps(path)
@@ -155,17 +207,38 @@ def _youtube_fps(path: Path) -> float:
     return round(float(fps), 3)
 
 
-def prepare_for_youtube(path: Path, expected: float | None = None) -> Path:
-    """Force CFR H264/AAC so Kick HLS remuxes don't upload as slow-mo video.
+def prepare_for_youtube(
+    path: Path,
+    expected: float | None = None,
+    *,
+    source_tool: str = "",
+    on_progress: ProgressCb | None = None,
+) -> Path:
+    """Make Kick HLS cuts YouTube-safe without a slow full A/V re-encode.
 
-    Stream-copy preserves broken VFR/PTS from TS→MP4: audio plays normal, video
-    crawls. Always light-reencode with aligned A/V timestamps before YouTube.
+    - Already-encoded exports (effects): fast remux only
+    - Stream-copy HLS cuts: CFR video + audio copy (much faster than re-encoding audio)
     """
     if not path.exists() or path.stat().st_size < 1024:
         raise FFmpegError("YouTube için dosya yok veya boş")
 
+    if on_progress:
+        on_progress(0.02)
+
     if expected and expected > 0.5:
         ensure_clip_duration(path, expected, label="YouTube kesit")
+
+    tool = (source_tool or "").lower()
+    stream_copy = any(
+        token in tool
+        for token in ("hls-parallel", "ffmpeg-hls", "streamlink", "local-cut")
+    )
+
+    if not stream_copy:
+        if _faststart_remux(path, expected):
+            if on_progress:
+                on_progress(1.0)
+            return path
 
     remuxed = path.with_name(f"{path.stem}_yt{path.suffix}")
     if remuxed.exists():
@@ -182,7 +255,10 @@ def prepare_for_youtube(path: Path, expected: float | None = None) -> Path:
         except FFmpegError:
             dur = None
 
-    # Prefer GPU when available, then ultrafast x264
+    def _prep_prog(frac: float) -> None:
+        if on_progress:
+            on_progress(0.08 + max(0.0, min(1.0, frac)) * 0.9)
+
     encoders = _encoder_candidates()
     last_err = ""
     for enc in encoders:
@@ -204,21 +280,12 @@ def prepare_for_youtube(path: Path, expected: float | None = None) -> Path:
             [
                 "-vf",
                 f"fps={fps:.5f}".rstrip("0").rstrip(".") + ",setpts=PTS-STARTPTS",
-                "-af",
-                "asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0",
                 "-c:v",
                 *enc,
                 "-pix_fmt",
                 "yuv420p",
                 "-c:a",
-                "aac",
-                "-b:a",
-                "160k",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                "-shortest",
+                "copy",
                 "-movflags",
                 "+faststart",
                 str(remuxed),
@@ -227,7 +294,7 @@ def prepare_for_youtube(path: Path, expected: float | None = None) -> Path:
         try:
             if remuxed.exists():
                 remuxed.unlink()
-            run_ffmpeg(cmd, duration=dur)
+            run_ffmpeg(cmd, duration=dur, on_progress=_prep_prog)
             if remuxed.exists() and remuxed.stat().st_size > 1024:
                 break
         except FFmpegError as exc:
@@ -248,6 +315,8 @@ def prepare_for_youtube(path: Path, expected: float | None = None) -> Path:
     remuxed.replace(path)
     if expected and expected > 0.5:
         ensure_clip_duration(path, expected, label="YouTube encode")
+    if on_progress:
+        on_progress(1.0)
     return path
 
 
@@ -381,8 +450,6 @@ def _ffmpeg_color(value: str, *, default_alpha: float = 1.0) -> str:
     named = re.sub(r"[^a-zA-Z0-9_]", "", raw) or "white"
     return f"{named}@{max(0.0, min(1.0, default_alpha)):.2f}"
 
-
-ProgressCb = Callable[[float], None]
 
 _ENCODER_CACHE: list[str] | None = None
 _FULL_FRAME_TYPES = {
