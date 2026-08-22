@@ -30,8 +30,21 @@ async function waitForYoutube(jobId: string, onTick: (job: Job) => void): Promis
     if (job.status === "error") {
       throw new Error(job.error || "Yükleme başarısız");
     }
-    await sleep(1200);
+    await sleep(job.status === "processing" ? 2500 : 1200);
   }
+}
+
+function ytProcessingHint(job: Job | null): string {
+  const yt = job?.meta?.youtube as
+    | { processingProgress?: number; processingStatus?: string; uploadStatus?: string }
+    | undefined;
+  if (!yt) return "";
+  if (typeof yt.processingProgress === "number") {
+    return ` · YouTube %${Math.round(yt.processingProgress)}`;
+  }
+  if (yt.processingStatus) return ` · ${yt.processingStatus}`;
+  if (yt.uploadStatus) return ` · ${yt.uploadStatus}`;
+  return "";
 }
 
 function PublishInner() {
@@ -71,21 +84,25 @@ function PublishInner() {
       setPrivacy(def);
       const t = (data.meta?.thumbnail as string) || null;
       if (t) setThumbDataUrl(t);
-      if (["queued", "exporting", "cutting", "uploading"].includes(data.status)) {
+      if (["queued", "exporting", "cutting", "uploading", "processing"].includes(data.status)) {
         setBusy(true);
         setBackgrounded(true);
-        setMessage(`${jobStatusLabel(data.status)} (%${Math.round(data.progress || 0)})`);
+        setMessage(
+          `${jobStatusLabel(data.status)} (%${Math.round(data.progress || 0)})${ytProcessingHint(data)}`
+        );
         void waitForYoutube(jobId, (j) => {
           setJob(j);
-          setMessage(`${jobStatusLabel(j.status)} (%${Math.round(j.progress || 0)})`);
+          setMessage(
+            `${jobStatusLabel(j.status)} (%${Math.round(j.progress || 0)})${ytProcessingHint(j)}`
+          );
         })
           .then((result) => {
             setJob(result);
             const url = (result.meta?.youtube as { url?: string } | undefined)?.url || null;
             setYtUrl(url);
-            setMessage(url ? "YouTube’a yüklendi" : "Yükleme tamam");
-            void notifyDesktop("CutMuck", "YouTube yüklemesi tamamlandı");
-            push("YouTube yüklemesi tamam", "ok");
+            setMessage(url ? "YouTube işlemesi tamam — yayın hazır" : "Yükleme tamam");
+            void notifyDesktop("CutMuck", "YouTube videosu hazır");
+            push("YouTube videosu hazır", "ok");
           })
           .catch((e) => {
             const msg = e instanceof Error ? e.message : "Yükleme başarısız";
@@ -225,14 +242,14 @@ function PublishInner() {
         setJob(j);
         const pct = Math.round(j.progress || 0);
         const size = j.cut_size_bytes ? ` · ${formatBytes(j.cut_size_bytes)}` : "";
-        setMessage(`${jobStatusLabel(j.status)} (%${pct})${size}`);
+        setMessage(`${jobStatusLabel(j.status)} (%${pct})${size}${ytProcessingHint(j)}`);
       });
       setJob(result);
       const url = (result.meta?.youtube as { url?: string } | undefined)?.url || null;
       setYtUrl(url);
-      setMessage(url ? "YouTube’a yüklendi" : "Yükleme tamam");
-      void notifyDesktop("CutMuck", url ? "YouTube yüklemesi tamamlandı" : "Yükleme tamam");
-      push("YouTube yüklemesi tamam", "ok");
+      setMessage(url ? "YouTube işlemesi tamam — yayın hazır" : "Yükleme tamam");
+      void notifyDesktop("CutMuck", url ? "YouTube videosu hazır" : "Yükleme tamam");
+      push("YouTube videosu hazır", "ok");
       if (result.meta?.thumb_error) {
         const thumbMsg = String(result.meta.thumb_error);
         push(

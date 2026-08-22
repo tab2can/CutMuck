@@ -14,6 +14,7 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+VIDEOS_LIST_URL = "https://www.googleapis.com/youtube/v3/videos"
 THUMB_UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 
 # YouTube requires chunk sizes that are multiples of 256 KiB (except the last).
@@ -21,14 +22,12 @@ _CHUNK_UNIT = 256 * 1024
 
 
 def _chunk_size_for(file_size: int) -> int:
-    """Large chunks → fewer HTTPS round-trips on a fast uplink."""
-    if file_size >= 4 * 1024**3:  # >= 4 GiB
-        return 512 * _CHUNK_UNIT  # 128 MiB
-    if file_size >= 512 * 1024**2:  # >= 512 MiB
-        return 256 * _CHUNK_UNIT  # 64 MiB
-    if file_size >= 80 * 1024**2:  # >= 80 MiB
+    """Stable VPS chunks (8–32 MiB) — fewer hung writes than 64–128 MiB."""
+    if file_size >= 2 * 1024**3:  # >= 2 GiB
         return 128 * _CHUNK_UNIT  # 32 MiB
-    return 64 * _CHUNK_UNIT  # 16 MiB
+    if file_size >= 256 * 1024**2:  # >= 256 MiB
+        return 64 * _CHUNK_UNIT  # 16 MiB
+    return 32 * _CHUNK_UNIT  # 8 MiB
 
 
 class YoutubeError(Exception):
@@ -165,6 +164,141 @@ def credentials_from_refresh(
     return _Tok(refresh_access_token(client_id, client_secret, refresh_token))
 
 
+def _parse_range_end(range_hdr: str | None) -> int | None:
+    if not range_hdr or "-" not in range_hdr:
+        return None
+    try:
+        return int(range_hdr.split("-")[1]) + 1
+    except ValueError:
+        return None
+
+
+def _query_upload_offset(
+    client: httpx.Client, upload_url: str, file_size: int
+) -> tuple[int | None, dict[str, Any] | None]:
+    """Empty PUT bytes */SIZE — returns (next_offset, completed_json_or_None)."""
+    resp = client.put(
+        upload_url,
+        content=b"",
+        headers={
+            "Content-Length": "0",
+            "Content-Range": f"bytes */{file_size}",
+        },
+    )
+    if resp.status_code in {200, 201}:
+        try:
+            return None, resp.json()
+        except Exception:  # noqa: BLE001
+            return None, {}
+    if resp.status_code == 308:
+        return _parse_range_end(resp.headers.get("range") or resp.headers.get("Range")) or 0, None
+    raise YoutubeError(f"Upload status HTTP {resp.status_code}: {resp.text[:200]}")
+
+
+def get_video_status(
+    *,
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    video_id: str,
+) -> dict[str, Any]:
+    """Fetch status + processingDetails for an owned video."""
+    token = refresh_access_token(client_id, client_secret, refresh_token)
+    with httpx.Client(timeout=30.0, http2=False) as client:
+        resp = client.get(
+            VIDEOS_LIST_URL,
+            params={
+                "part": "status,processingDetails,contentDetails",
+                "id": video_id,
+            },
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+    if resp.status_code >= 400:
+        detail = resp.text[:300]
+        try:
+            detail = resp.json().get("error", {}).get("message") or detail
+        except Exception:  # noqa: BLE001
+            pass
+        raise YoutubeError(f"Video durumu alınamadı: {detail}")
+    data = resp.json() if resp.content else {}
+    items = data.get("items") or []
+    if not items:
+        raise YoutubeError("Video YouTube’da bulunamadı (henüz oluşmamış olabilir)")
+    item = items[0]
+    status = item.get("status") or {}
+    proc = item.get("processingDetails") or {}
+    progress = proc.get("processingProgress") or {}
+    parts_done = progress.get("partsProcessed")
+    parts_total = progress.get("partsTotal")
+    pct: float | None = None
+    try:
+        if parts_done is not None and parts_total and float(parts_total) > 0:
+            pct = round(100.0 * float(parts_done) / float(parts_total), 1)
+    except (TypeError, ValueError):
+        pct = None
+    return {
+        "id": item.get("id") or video_id,
+        "uploadStatus": status.get("uploadStatus") or "",
+        "rejectionReason": status.get("rejectionReason") or "",
+        "failureReason": status.get("failureReason") or "",
+        "privacyStatus": status.get("privacyStatus") or "",
+        "processingStatus": proc.get("processingStatus") or "",
+        "processingFailureReason": proc.get("processingFailureReason") or "",
+        "processingProgress": pct,
+        "duration": (item.get("contentDetails") or {}).get("duration") or "",
+        "raw": item,
+    }
+
+
+def wait_until_processed(
+    *,
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    video_id: str,
+    on_tick: Callable[[dict[str, Any]], None] | None = None,
+    poll_sec: float = 4.0,
+    timeout_sec: float = 2 * 3600,
+) -> dict[str, Any]:
+    """Poll until processing finishes or upload is rejected/failed."""
+    deadline = time.monotonic() + max(60.0, timeout_sec)
+    last: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        last = get_video_status(
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+            video_id=video_id,
+        )
+        if on_tick:
+            on_tick(last)
+
+        upload = (last.get("uploadStatus") or "").lower()
+        if upload in {"rejected", "failed", "deleted"}:
+            reason = last.get("rejectionReason") or last.get("failureReason") or upload
+            raise YoutubeError(f"YouTube videoyu reddetti: {reason}")
+
+        proc = (last.get("processingStatus") or "").lower()
+        if proc == "failed":
+            reason = last.get("processingFailureReason") or "processing failed"
+            raise YoutubeError(f"YouTube işleme başarısız: {reason}")
+        if proc == "succeeded":
+            return last
+        if proc == "terminated":
+            raise YoutubeError("YouTube işleme sonlandırıldı")
+
+        # Some videos report uploaded with empty processingDetails once ready
+        if upload == "processed" and proc in {"", "succeeded"}:
+            return last
+
+        time.sleep(poll_sec)
+
+    raise YoutubeError(
+        "YouTube işleme zaman aşımı — Studio’dan kontrol edin "
+        f"(son durum: upload={last.get('uploadStatus')}, processing={last.get('processingStatus')})"
+    )
+
+
 def upload_video(
     *,
     client_id: str,
@@ -176,7 +310,7 @@ def upload_video(
     privacy: str = "unlisted",
     on_progress: Callable[[float], None] | None = None,
 ) -> dict[str, Any]:
-    """Resumable upload via httpx (avoids httplib2 SSL hangs on Windows)."""
+    """Resumable upload via httpx; verifies video id and uploadStatus before return."""
     if not file_path.exists():
         raise YoutubeError("Yüklenecek dosya yok")
 
@@ -185,7 +319,7 @@ def upload_video(
         raise YoutubeError("Kesit dosyası boş")
 
     chunk_size = _chunk_size_for(file_size)
-    io_timeout = 600.0 if chunk_size >= 32 * _CHUNK_UNIT else 180.0
+    io_timeout = 300.0 if chunk_size >= 64 * _CHUNK_UNIT else 180.0
     timeout = httpx.Timeout(io_timeout, connect=30.0, read=io_timeout, write=io_timeout)
 
     body = {
@@ -234,9 +368,27 @@ def upload_video(
                 offset = 0
                 with file_path.open("rb") as fh:
                     while offset < file_size:
-                        chunk = fh.read(chunk_size)
-                        if not chunk:
-                            break
+                        fh.seek(offset)
+                        to_read = min(chunk_size, file_size - offset)
+                        chunk = fh.read(to_read)
+                        if not chunk or len(chunk) != to_read:
+                            # Interrupted mid-file — ask server how far we got
+                            next_off, done = _query_upload_offset(client, upload_url, file_size)
+                            if done is not None:
+                                video_id = done.get("id")
+                                if video_id:
+                                    return _finish_upload(
+                                        client_id,
+                                        client_secret,
+                                        refresh_token,
+                                        str(video_id),
+                                        done,
+                                        on_progress,
+                                    )
+                            raise YoutubeError(
+                                f"Dosya okunamadı (offset={offset}, size={file_size})"
+                            )
+
                         end = offset + len(chunk) - 1
                         put_headers = {
                             "Content-Length": str(len(chunk)),
@@ -254,33 +406,53 @@ def upload_video(
                             except httpx.HTTPError as exc:
                                 last_error = exc
                                 if chunk_try >= 4 or not _is_transient(exc):
+                                    # Resume from server offset
+                                    try:
+                                        next_off, done = _query_upload_offset(
+                                            client, upload_url, file_size
+                                        )
+                                        if done is not None:
+                                            video_id = done.get("id")
+                                            if video_id:
+                                                return _finish_upload(
+                                                    client_id,
+                                                    client_secret,
+                                                    refresh_token,
+                                                    str(video_id),
+                                                    done,
+                                                    on_progress,
+                                                )
+                                        if next_off is not None:
+                                            offset = next_off
+                                            resp = None
+                                            break
+                                    except YoutubeError:
+                                        pass
                                     raise
                                 time.sleep(0.6 * chunk_try)
 
-                        assert resp is not None
+                        if resp is None:
+                            continue
+
                         if resp.status_code in {200, 201}:
                             data = resp.json()
                             video_id = data.get("id")
                             if not video_id:
                                 raise YoutubeError("YouTube video id dönmedi")
-                            if on_progress:
-                                on_progress(1.0)
-                            return {
-                                "id": video_id,
-                                "url": f"https://www.youtube.com/watch?v={video_id}",
-                                "raw": data,
-                            }
+                            return _finish_upload(
+                                client_id,
+                                client_secret,
+                                refresh_token,
+                                str(video_id),
+                                data,
+                                on_progress,
+                            )
 
                         if resp.status_code == 308:
-                            range_hdr = resp.headers.get("range") or resp.headers.get("Range")
-                            if range_hdr and "-" in range_hdr:
-                                try:
-                                    offset = int(range_hdr.split("-")[1]) + 1
-                                    fh.seek(offset)
-                                except ValueError:
-                                    offset = end + 1
-                            else:
-                                offset = end + 1
+                            next_off = _parse_range_end(
+                                resp.headers.get("range") or resp.headers.get("Range")
+                            )
+                            offset = next_off if next_off is not None else end + 1
                             if on_progress:
                                 on_progress(min(0.99, offset / file_size))
                             continue
@@ -294,8 +466,24 @@ def upload_video(
                         raise YoutubeError(
                             f"YouTube chunk hatası HTTP {resp.status_code}: {resp.text[:300]}"
                         )
-                    else:
-                        raise YoutubeError("Upload beklenmedik şekilde sonlandı")
+
+                    # Loop exited with offset >= file_size but no 200 — query completion
+                    next_off, done = _query_upload_offset(client, upload_url, file_size)
+                    if done is not None:
+                        video_id = done.get("id")
+                        if video_id:
+                            return _finish_upload(
+                                client_id,
+                                client_secret,
+                                refresh_token,
+                                str(video_id),
+                                done,
+                                on_progress,
+                            )
+                    raise YoutubeError(
+                        f"Upload tamamlanamadı (offset={offset}/{file_size}, "
+                        f"server={next_off})"
+                    )
 
         except YoutubeError:
             raise
@@ -307,6 +495,42 @@ def upload_video(
             raise YoutubeError(f"YouTube yükleme hatası: {exc}") from exc
 
     raise YoutubeError(f"YouTube yükleme hatası: {last_error}")
+
+
+def _finish_upload(
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    video_id: str,
+    raw: dict[str, Any],
+    on_progress: Callable[[float], None] | None,
+) -> dict[str, Any]:
+    if on_progress:
+        on_progress(1.0)
+    # Confirm the video resource exists and was not immediately rejected
+    try:
+        st = get_video_status(
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+            video_id=video_id,
+        )
+        upload = (st.get("uploadStatus") or "").lower()
+        if upload in {"rejected", "failed", "deleted"}:
+            reason = st.get("rejectionReason") or st.get("failureReason") or upload
+            raise YoutubeError(f"YouTube videoyu reddetti: {reason}")
+    except YoutubeError:
+        raise
+    except Exception:  # noqa: BLE001
+        st = {}
+
+    return {
+        "id": video_id,
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+        "raw": raw,
+        "uploadStatus": st.get("uploadStatus") if st else "",
+        "processingStatus": st.get("processingStatus") if st else "",
+    }
 
 
 def _thumbnail_error_message(detail: str) -> str:

@@ -166,7 +166,8 @@ export function jobStatusLabel(status: string): string {
     error: "Hata",
     queued: "Sırada",
     exporting: "Dışa aktarılıyor",
-    uploading: "Yükleniyor",
+    uploading: "YouTube’a yükleniyor",
+    processing: "YouTube işliyor",
     cutting: "Kesiliyor",
   };
   return map[status] || status;

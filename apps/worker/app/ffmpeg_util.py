@@ -10,6 +10,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .config import settings
+
 
 class FFmpegError(Exception):
     pass
@@ -27,6 +29,14 @@ def _ffprobe() -> str:
     if not path:
         raise FFmpegError("ffprobe PATH üzerinde bulunamadı")
     return path
+
+
+def _ffmpeg_threads() -> int:
+    return max(1, int(getattr(settings, "ffmpeg_threads", 0) or 1))
+
+
+def _x264_thread_args() -> list[str]:
+    return ["-threads", str(_ffmpeg_threads())]
 
 
 def probe_duration(path: Path) -> float:
@@ -64,9 +74,10 @@ def _reencode_exact_duration(source: Path, dest: Path, duration: float) -> None:
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        "ultrafast",
         "-crf",
         "23",
+        *_x264_thread_args(),
         "-c:a",
         "aac",
         "-b:a",
@@ -93,7 +104,7 @@ def ensure_clip_duration(path: Path, expected: float, *, label: str = "kesit") -
         raise FFmpegError(f"{label} boş veya bozuk")
 
     too_short = got < expected * 0.85 and (expected - got) > 25
-    too_long = got > expected * 1.12 and (got - expected) > 45
+    too_long = got > expected * 1.05 and (got - expected) > 15
     if not too_short and not too_long:
         return path
 
@@ -116,7 +127,7 @@ def ensure_clip_duration(path: Path, expected: float, *, label: str = "kesit") -
             f"{label} süre düzeltilemedi ({got:.0f}s → beklenen {expected:.0f}s): {exc}"
         ) from exc
 
-    if got2 > expected * 1.15 and (got2 - expected) > 45:
+    if got2 > expected * 1.08 and (got2 - expected) > 15:
         try:
             fixed.unlink()
         except OSError:
@@ -130,6 +141,113 @@ def ensure_clip_duration(path: Path, expected: float, *, label: str = "kesit") -
     except OSError:
         pass
     fixed.replace(path)
+    return path
+
+
+def prepare_for_youtube(path: Path, expected: float | None = None) -> Path:
+    """Remux with genpts+faststart; re-encode if timestamps are still bad.
+
+    Keeps stream-copy when possible (fast). Called right before YouTube upload.
+    """
+    if not path.exists() or path.stat().st_size < 1024:
+        raise FFmpegError("YouTube için dosya yok veya boş")
+
+    if expected and expected > 0.5:
+        ensure_clip_duration(path, expected, label="YouTube kesit")
+
+    remuxed = path.with_name(f"{path.stem}_yt{path.suffix}")
+    if remuxed.exists():
+        try:
+            remuxed.unlink()
+        except OSError:
+            pass
+
+    cmd_copy = [
+        _ffmpeg(),
+        "-y",
+        "-fflags",
+        "+genpts",
+        "-i",
+        str(path),
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        str(remuxed),
+    ]
+    try:
+        run_ffmpeg(cmd_copy)
+        ok = remuxed.exists() and remuxed.stat().st_size > 1024
+    except FFmpegError:
+        ok = False
+
+    if ok and expected and expected > 0.5:
+        try:
+            ensure_clip_duration(remuxed, expected, label="YouTube remux")
+        except FFmpegError:
+            ok = False
+
+    if ok:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        remuxed.replace(path)
+        return path
+
+    if remuxed.exists():
+        try:
+            remuxed.unlink()
+        except OSError:
+            pass
+
+    # Full re-encode — YouTube-safe H264/AAC
+    dur = expected
+    if not dur or dur < 0.5:
+        try:
+            dur = probe_duration(path)
+        except FFmpegError:
+            dur = None
+    cmd_enc = [
+        _ffmpeg(),
+        "-y",
+        "-fflags",
+        "+genpts",
+        "-i",
+        str(path),
+    ]
+    if dur and dur > 0.5:
+        cmd_enc.extend(["-t", f"{dur:.3f}"])
+    cmd_enc.extend(
+        [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "23",
+            *_x264_thread_args(),
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-movflags",
+            "+faststart",
+            str(remuxed),
+        ]
+    )
+    run_ffmpeg(cmd_enc, duration=dur)
+    if not remuxed.exists() or remuxed.stat().st_size < 1024:
+        raise FFmpegError("YouTube encode başarısız")
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    remuxed.replace(path)
+    if expected and expected > 0.5:
+        ensure_clip_duration(path, expected, label="YouTube encode")
     return path
 
 
@@ -193,9 +311,10 @@ def cut_media(source: Path, dest: Path, start_sec: float, end_sec: float) -> Pat
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        "ultrafast",
         "-crf",
         "23",
+        *_x264_thread_args(),
         "-c:a",
         "aac",
         "-b:a",
@@ -346,8 +465,9 @@ def run_ffmpeg(
 def _encoder_candidates() -> list[list[str]]:
     """Prefer GPU encode when the box has NVENC/QSV; else ultrafast x264."""
     global _ENCODER_CACHE
+    cpu = ["libx264", "-preset", "ultrafast", "-crf", "23", *_x264_thread_args()]
     if _ENCODER_CACHE is not None:
-        return [_ENCODER_CACHE, ["libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "0"]]
+        return [_ENCODER_CACHE, cpu]
 
     try:
         out = subprocess.run(
@@ -378,8 +498,8 @@ def _encoder_candidates() -> list[list[str]]:
     elif "h264_qsv" in out:
         _ENCODER_CACHE = ["h264_qsv", "-preset", "veryfast", "-global_quality", "23"]
     else:
-        _ENCODER_CACHE = ["libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "0"]
-    return [_ENCODER_CACHE, ["libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "0"]]
+        _ENCODER_CACHE = cpu
+    return [_ENCODER_CACHE, cpu]
 
 
 def _needs_full_reencode(overlays: list[dict[str, Any]]) -> bool:
@@ -550,8 +670,7 @@ def _compat_x264() -> list[str]:
         "ultrafast",
         "-crf",
         "23",
-        "-threads",
-        "0",
+        *_x264_thread_args(),
         "-pix_fmt",
         "yuv420p",
         "-profile:v",

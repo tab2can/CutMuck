@@ -17,11 +17,18 @@ def _default_root() -> Path:
     return worker_dir
 
 
+def _cpu_count() -> int:
+    n = os.cpu_count() or 2
+    return max(1, int(n))
+
+
 ROOT = Path(os.environ["CUTMUCK_ROOT"]) if "CUTMUCK_ROOT" in os.environ else _default_root()
 DATA_DIR = Path(os.environ.get("CUTMUCK_DATA", str(ROOT / "data")))
 MEDIA_DIR = DATA_DIR / "media"
 ASSETS_DIR = DATA_DIR / "channel_assets"
 DB_PATH = DATA_DIR / "cutmuck.db"
+
+_CPUS = _cpu_count()
 
 
 class Settings(BaseSettings):
@@ -42,9 +49,18 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
     session_secret: str = ""
 
+    # Performance (auto-tuned for dedicated box; override via env)
+    # 6c/12GB defaults: leave 1 core for OS/uvicorn, serialize heavy jobs
+    ffmpeg_threads: int = max(1, _CPUS - 1)
+    hls_download_workers: int = min(8, max(3, _CPUS))
+    heavy_job_slots: int = 1
+
 
 settings = Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 settings.media_dir.mkdir(parents=True, exist_ok=True)
 settings.assets_dir.mkdir(parents=True, exist_ok=True)
 settings.admin_email = settings.admin_email.strip().lower()
+settings.ffmpeg_threads = max(1, int(settings.ffmpeg_threads))
+settings.hls_download_workers = max(1, min(16, int(settings.hls_download_workers)))
+settings.heavy_job_slots = max(1, min(4, int(settings.heavy_job_slots)))

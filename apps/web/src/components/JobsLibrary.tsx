@@ -14,7 +14,7 @@ import { ContextSurface } from "@/components/ContextMenu";
 import { useToast } from "@/components/Toast";
 import { notifyDesktop } from "@/lib/notify";
 
-const ACTIVE = new Set(["queued", "exporting", "cutting", "uploading"]);
+const ACTIVE = new Set(["queued", "exporting", "cutting", "uploading", "processing"]);
 
 function IconTrash() {
   return (
@@ -39,8 +39,8 @@ export function JobsLibrary() {
       for (const job of list) {
         const prev = prevStatus.current[job.id];
         if (prev && ACTIVE.has(prev) && job.status === "done") {
-          void notifyDesktop("CutMuck", `${job.title || "Video"} YouTube’a yüklendi`);
-          push("YouTube yüklemesi tamam", "ok");
+          void notifyDesktop("CutMuck", `${job.title || "Video"} YouTube’da hazır`);
+          push("YouTube videosu hazır", "ok");
         }
         if (prev && ACTIVE.has(prev) && job.status === "error") {
           push(job.error || "Yükleme başarısız", "error");

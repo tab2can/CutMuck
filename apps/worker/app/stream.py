@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .config import settings
 from .ffmpeg_util import FFmpegError, run_ffmpeg
 from .kick import (
     KickError,
@@ -170,7 +171,7 @@ def download_segment_parallel_hls(
         def _one(url: str) -> None:
             _download_asset(url, work / mapping[url])
 
-        workers = min(16, max(4, total))
+        workers = min(int(settings.hls_download_workers), max(1, total))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(_one, url) for url in urls]
             for fut in as_completed(futures):

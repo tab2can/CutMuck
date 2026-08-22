@@ -17,7 +17,15 @@ from fastapi.staticfiles import StaticFiles
 
 from . import db as database
 from .config import settings
-from .ffmpeg_util import FFmpegError, apply_overlays, cut_media, ensure_clip_duration, probe_duration
+from .ffmpeg_util import (
+    FFmpegError,
+    apply_overlays,
+    cut_media,
+    ensure_clip_duration,
+    overlay_output_duration,
+    prepare_for_youtube,
+    probe_duration,
+)
 from .kick import (
     KickError,
     ensure_live_playlist,
@@ -78,6 +86,7 @@ from .youtube_util import (
     new_oauth_state,
     set_thumbnail,
     upload_video,
+    wait_until_processed,
 )
 
 app = FastAPI(title="CutMuck Worker", version="0.3.0")
@@ -88,6 +97,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serialize cut/encode/upload so a 6c/12GB box stays saturated on one job
+_heavy_job_sem = asyncio.Semaphore(max(1, int(settings.heavy_job_slots)))
+_ACTIVE_YT = frozenset({"queued", "exporting", "uploading", "cutting", "processing"})
 
 
 def _is_public_path(path: str) -> bool:
@@ -880,10 +893,10 @@ async def jobs_get(request: Request, job_id: str) -> JobOut:
         # Only mark failed if the in-memory task finished without updating status.
         # Do NOT fail when task is missing (tab closed / poll from another page —
         # background create_task may still be running, or worker was restarted).
-        if job.get("status") in {"queued", "exporting", "uploading", "cutting"}:
+        if job.get("status") in _ACTIVE_YT:
             task = _youtube_tasks.get(job_id)
             if task is not None and task.done() and not task.cancelled():
-                still = job.get("status") in {"queued", "exporting", "uploading", "cutting"}
+                still = job.get("status") in _ACTIVE_YT
                 if still:
                     err = "Yükleme kesildi veya takıldı. Tekrar YouTube'a yükle butonuna basın."
                     try:
@@ -1197,6 +1210,7 @@ async def _ensure_segment_file(
     overlays: list[dict[str, Any]] | None = None,
     *,
     finalize: bool = True,
+    hold_heavy: bool = True,
 ) -> dict[str, Any]:
     job_id = job["id"]
     meta = job.get("meta") or {}
@@ -1211,6 +1225,18 @@ async def _ensure_segment_file(
         and meta.get("overlays_applied") == ov
     ):
         return job
+
+    if hold_heavy:
+        async with _heavy_job_sem:
+            return await _ensure_segment_file(
+                db,
+                job,
+                start_sec,
+                end_sec,
+                overlays,
+                finalize=finalize,
+                hold_heavy=False,
+            )
 
     clip_len = max(0.1, end_sec - start_sec)
     await database.update_job(db, job_id, status="cutting", progress=12, error=None)
@@ -1403,8 +1429,17 @@ _youtube_tasks: dict[str, asyncio.Task[None]] = {}
 
 def _sync_upload_progress(job_id: str, frac: float) -> None:
     """Best-effort progress from the upload thread (aiosqlite not usable there)."""
-    progress = round(75 + max(0.0, min(1.0, frac)) * 24, 1)
+    progress = round(70 + max(0.0, min(1.0, frac)) * 20, 1)
     _sync_job_progress(job_id, progress, "uploading")
+
+
+def _sync_processing_progress(job_id: str, tick: dict[str, Any]) -> None:
+    pct = tick.get("processingProgress")
+    if pct is not None:
+        progress = round(90 + max(0.0, min(100.0, float(pct))) * 0.09, 1)
+    else:
+        progress = 92.0
+    _sync_job_progress(job_id, progress, "processing")
 
 
 async def _run_youtube_pipeline(
@@ -1425,102 +1460,201 @@ async def _run_youtube_pipeline(
         if not job:
             return
 
-        await database.update_job(db, job_id, status="exporting", progress=10, error=None)
-        try:
-            job = await _ensure_segment_file(
-                db, job, start_sec, end_sec, overlays=overlays, finalize=False
-            )
-        except HTTPException as exc:
-            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-            await database.update_job(db, job_id, status="error", error=detail)
-            return
+        async with _heavy_job_sem:
+            await database.update_job(db, job_id, status="exporting", progress=10, error=None)
+            try:
+                job = await _ensure_segment_file(
+                    db,
+                    job,
+                    start_sec,
+                    end_sec,
+                    overlays=overlays,
+                    finalize=False,
+                    hold_heavy=False,
+                )
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+                await database.update_job(db, job_id, status="error", error=detail)
+                return
 
-        upload_path = job.get("cut_path")
-        if not upload_path or not Path(upload_path).exists():
-            await database.update_job(
-                db, job_id, status="error", error="Yüklenecek kesit dosyası yok"
-            )
-            return
+            upload_path = job.get("cut_path")
+            if not upload_path or not Path(upload_path).exists():
+                await database.update_job(
+                    db, job_id, status="error", error="Yüklenecek kesit dosyası yok"
+                )
+                return
 
-        us = await database.get_user_settings(db, owner_email)
-        client_id = (us.get("youtube_client_id") or "").strip()
-        client_secret = (us.get("youtube_client_secret") or "").strip()
-        refresh = (us.get("youtube_refresh_token") or "").strip()
-        if not client_id or not client_secret or not refresh:
+            us = await database.get_user_settings(db, owner_email)
+            client_id = (us.get("youtube_client_id") or "").strip()
+            client_secret = (us.get("youtube_client_secret") or "").strip()
+            refresh = (us.get("youtube_refresh_token") or "").strip()
+            if not client_id or not client_secret or not refresh:
+                await database.update_job(
+                    db,
+                    job_id,
+                    status="error",
+                    error="YouTube OAuth tamamlanmamış — Ayarlar'dan bağlayın",
+                )
+                return
+
+            path = Path(upload_path)
+            expected = overlay_output_duration(
+                max(0.1, end_sec - start_sec), overlays or []
+            )
+            await database.update_job(db, job_id, status="exporting", progress=68, error=None)
+            try:
+                path = await asyncio.to_thread(prepare_for_youtube, path, expected)
+                job = (
+                    await database.update_job(db, job_id, cut_path=str(path)) or job
+                )
+            except FFmpegError as exc:
+                await database.update_job(db, job_id, status="error", error=str(exc))
+                return
+
+            await database.update_job(db, job_id, status="uploading", progress=70, error=None)
+            size = path.stat().st_size
+            # Assume ~512 KiB/s worst case + 20 min slack (multi‑GB uploads)
+            upload_timeout = max(1800.0, size / (512 * 1024) + 1200)
+            upload_timeout = min(upload_timeout, 12 * 3600)
+
+            def _upload() -> dict[str, Any]:
+                return upload_video(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    refresh_token=refresh,
+                    file_path=path,
+                    title=title,
+                    description=description,
+                    privacy=privacy,
+                    on_progress=lambda frac: _sync_upload_progress(job_id, frac),
+                )
+
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(_upload), timeout=upload_timeout
+                )
+            except TimeoutError:
+                await database.update_job(
+                    db,
+                    job_id,
+                    status="error",
+                    error="YouTube yükleme zaman aşımı — tekrar deneyin",
+                )
+                return
+            except YoutubeError as exc:
+                await database.update_job(db, job_id, status="error", error=str(exc))
+                return
+            except Exception as exc:  # noqa: BLE001
+                await database.update_job(
+                    db, job_id, status="error", error=f"YouTube yükleme hatası: {exc}"
+                )
+                return
+
+            video_id = result.get("id")
+            if not video_id:
+                await database.update_job(
+                    db, job_id, status="error", error="YouTube video id dönmedi"
+                )
+                return
+
+            meta = job.get("meta") or {}
+            meta["youtube"] = {
+                "id": video_id,
+                "url": result.get("url") or f"https://www.youtube.com/watch?v={video_id}",
+                "uploadStatus": result.get("uploadStatus") or "uploaded",
+                "processingStatus": result.get("processingStatus") or "processing",
+            }
             await database.update_job(
                 db,
                 job_id,
-                status="error",
-                error="YouTube OAuth tamamlanmamış — Ayarlar'dan bağlayın",
+                status="processing",
+                progress=90,
+                title=title,
+                meta=meta,
+                error=None,
             )
-            return
 
-        await database.update_job(db, job_id, status="uploading", progress=75, error=None)
-        path = Path(upload_path)
-        size = path.stat().st_size
-        # Assume ~512 KiB/s worst case + 20 min slack (multi‑GB uploads)
-        upload_timeout = max(1800.0, size / (512 * 1024) + 1200)
-        # Cap at 12h wall clock for extreme 30–40GB cases
-        upload_timeout = min(upload_timeout, 12 * 3600)
+            if thumbnail_data_url and thumbnail_data_url.startswith("data:image"):
+                try:
+                    await asyncio.sleep(1.0)
+                    _header, b64 = thumbnail_data_url.split(",", 1)
+                    raw = base64.b64decode(b64)
+                    thumb_path = settings.media_dir / f"{job_id}_thumb.jpg"
+                    thumb_path.write_bytes(raw)
+                    await asyncio.to_thread(
+                        set_thumbnail,
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        refresh_token=refresh,
+                        video_id=video_id,
+                        image_path=thumb_path,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    meta["thumb_error"] = str(exc)[:200]
+                    await database.update_job(db, job_id, meta=meta)
 
-        def _upload() -> dict[str, Any]:
-            return upload_video(
+        # Release heavy slot before long YouTube processing poll
+        def _on_proc(tick: dict[str, Any]) -> None:
+            _sync_processing_progress(job_id, tick)
+            try:
+                import json as _json
+                import sqlite3
+
+                conn = sqlite3.connect(str(settings.db_path), timeout=5)
+                try:
+                    row = conn.execute(
+                        "SELECT meta_json FROM jobs WHERE id = ?", (job_id,)
+                    ).fetchone()
+                    cur = {}
+                    if row and row[0]:
+                        cur = _json.loads(row[0])
+                    yt = dict(cur.get("youtube") or {})
+                    yt.update(
+                        {
+                            "uploadStatus": tick.get("uploadStatus") or "",
+                            "processingStatus": tick.get("processingStatus") or "",
+                            "processingProgress": tick.get("processingProgress"),
+                        }
+                    )
+                    cur["youtube"] = yt
+                    conn.execute(
+                        "UPDATE jobs SET meta_json = ?, updated_at = datetime('now') WHERE id = ?",
+                        (_json.dumps(cur), job_id),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            final = await asyncio.to_thread(
+                wait_until_processed,
                 client_id=client_id,
                 client_secret=client_secret,
                 refresh_token=refresh,
-                file_path=path,
-                title=title,
-                description=description,
-                privacy=privacy,
-                on_progress=lambda frac: _sync_upload_progress(job_id, frac),
+                video_id=str(video_id),
+                on_tick=_on_proc,
+                poll_sec=4.0,
+                timeout_sec=2 * 3600,
             )
-
-        try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(_upload), timeout=upload_timeout
-            )
-        except TimeoutError:
-            await database.update_job(
-                db,
-                job_id,
-                status="error",
-                error="YouTube yükleme zaman aşımı — tekrar deneyin",
-            )
-            return
         except YoutubeError as exc:
             await database.update_job(db, job_id, status="error", error=str(exc))
             return
         except Exception as exc:  # noqa: BLE001
             await database.update_job(
-                db, job_id, status="error", error=f"YouTube yükleme hatası: {exc}"
+                db, job_id, status="error", error=f"YouTube işleme hatası: {exc}"
             )
             return
 
-        video_id = result.get("id")
-        if thumbnail_data_url and video_id and thumbnail_data_url.startswith("data:image"):
-            try:
-                # Brief pause after long upload — Windows TLS sessions can be sticky
-                await asyncio.sleep(1.0)
-                header, b64 = thumbnail_data_url.split(",", 1)
-                raw = base64.b64decode(b64)
-                thumb_path = settings.media_dir / f"{job_id}_thumb.jpg"
-                thumb_path.write_bytes(raw)
-                await asyncio.to_thread(
-                    set_thumbnail,
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    refresh_token=refresh,
-                    video_id=video_id,
-                    image_path=thumb_path,
-                )
-            except Exception as exc:  # noqa: BLE001
-                # Non-fatal: video uploaded, thumb failed
-                meta_err = job.get("meta") or {}
-                meta_err["thumb_error"] = str(exc)[:200]
-                await database.update_job(db, job_id, meta=meta_err)
-
         meta = job.get("meta") or {}
-        meta["youtube"] = {"id": result.get("id"), "url": result.get("url")}
+        meta["youtube"] = {
+            "id": video_id,
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "uploadStatus": final.get("uploadStatus") or "processed",
+            "processingStatus": final.get("processingStatus") or "succeeded",
+            "processingProgress": final.get("processingProgress"),
+        }
         await database.update_job(
             db,
             job_id,
