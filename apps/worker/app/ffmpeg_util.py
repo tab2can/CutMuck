@@ -47,6 +47,107 @@ def probe_duration(path: Path) -> float:
     return float(data.get("format", {}).get("duration") or 0)
 
 
+def _reencode_exact_duration(source: Path, dest: Path, duration: float) -> None:
+    """Clean re-encode clipped to exact length — fixes bad HLS/copy timestamps."""
+    if dest.exists():
+        dest.unlink()
+    duration = max(0.5, float(duration))
+    cmd = [
+        _ffmpeg(),
+        "-y",
+        "-fflags",
+        "+genpts",
+        "-i",
+        str(source),
+        "-t",
+        f"{duration:.3f}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-movflags",
+        "+faststart",
+        str(dest),
+    ]
+    run_ffmpeg(cmd, duration=duration)
+
+
+def ensure_clip_duration(path: Path, expected: float, *, label: str = "kesit") -> Path:
+    """Reject or repair files whose probed duration doesn't match the In/Out window.
+
+    Stream-copy HLS remux / concat can produce broken timestamps: players (and
+    YouTube) then show a much longer, glitchy video. Re-encode when that happens.
+    """
+    expected = max(0.5, float(expected))
+    try:
+        got = probe_duration(path)
+    except FFmpegError as exc:
+        raise FFmpegError(f"{label} süresi okunamadı: {exc}") from exc
+    if got < 0.5:
+        raise FFmpegError(f"{label} boş veya bozuk")
+
+    too_short = got < expected * 0.85 and (expected - got) > 25
+    too_long = got > expected * 1.12 and (got - expected) > 45
+    if not too_short and not too_long:
+        return path
+
+    if too_short:
+        raise FFmpegError(
+            f"{label} beklenenden kısa ({got:.0f}s / {expected:.0f}s) — tekrar deneyin"
+        )
+
+    fixed = path.with_name(f"{path.stem}_fix{path.suffix}")
+    try:
+        _reencode_exact_duration(path, fixed, expected)
+        got2 = probe_duration(fixed)
+    except FFmpegError as exc:
+        if fixed.exists():
+            try:
+                fixed.unlink()
+            except OSError:
+                pass
+        raise FFmpegError(
+            f"{label} süre düzeltilemedi ({got:.0f}s → beklenen {expected:.0f}s): {exc}"
+        ) from exc
+
+    if got2 > expected * 1.15 and (got2 - expected) > 45:
+        try:
+            fixed.unlink()
+        except OSError:
+            pass
+        raise FFmpegError(
+            f"{label} hâlâ çok uzun ({got2:.0f}s / {expected:.0f}s) — tekrar deneyin"
+        )
+
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    fixed.replace(path)
+    return path
+
+
+def overlay_output_duration(clip_len: float, overlays: list[dict[str, Any]]) -> float:
+    """Expected length after overlays (speed changes duration)."""
+    speed = 1.0
+    for ov in overlays:
+        if ov.get("hidden"):
+            continue
+        if (ov.get("type") or "") == "speed":
+            try:
+                speed = float(ov.get("speed") or 1.0)
+            except (TypeError, ValueError):
+                speed = 1.0
+            speed = max(0.5, min(2.0, speed))
+    return max(0.5, float(clip_len) / speed)
+
+
 def cut_media(source: Path, dest: Path, start_sec: float, end_sec: float) -> Path:
     if end_sec <= start_sec:
         raise FFmpegError("Bitiş, başlangıçtan büyük olmalı")
@@ -71,10 +172,18 @@ def cut_media(source: Path, dest: Path, start_sec: float, end_sec: float) -> Pat
     ]
     proc = subprocess.run(cmd_copy, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode == 0 and dest.exists() and dest.stat().st_size > 0:
-        return dest
+        try:
+            return ensure_clip_duration(dest, duration, label="kesit")
+        except FFmpegError:
+            try:
+                dest.unlink()
+            except OSError:
+                pass
     cmd_enc = [
         _ffmpeg(),
         "-y",
+        "-fflags",
+        "+genpts",
         "-ss",
         f"{start_sec:.3f}",
         "-i",
@@ -91,12 +200,14 @@ def cut_media(source: Path, dest: Path, start_sec: float, end_sec: float) -> Pat
         "aac",
         "-b:a",
         "160k",
+        "-movflags",
+        "+faststart",
         str(dest),
     ]
     proc2 = subprocess.run(cmd_enc, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc2.returncode != 0 or not dest.exists():
         raise FFmpegError(proc2.stderr or proc.stderr or "Kesme başarısız")
-    return dest
+    return ensure_clip_duration(dest, duration, label="kesit")
 
 
 def _escape_drawtext(text: str) -> str:
@@ -576,6 +687,10 @@ def apply_overlays(
         except FFmpegError:
             dur = None
 
+    expected_out: float | None = None
+    if dur and dur > 0.5:
+        expected_out = overlay_output_duration(float(dur), overlays)
+
     # Color/speed/etc. really do touch every frame. Fade does not — even when
     # the timeline bar spans the whole cut, only head/tail pixels change.
     if dur and not _needs_full_reencode(overlays):
@@ -584,7 +699,7 @@ def apply_overlays(
         covered = sum(b - a for a, b in merged)
         if merged and covered / float(dur) <= 0.72:
             try:
-                return _apply_overlays_localized(
+                out = _apply_overlays_localized(
                     source,
                     dest,
                     overlays,
@@ -592,6 +707,9 @@ def apply_overlays(
                     windows=merged,
                     on_progress=on_progress,
                 )
+                if expected_out is not None:
+                    return ensure_clip_duration(out, expected_out, label="efekt")
+                return out
             except FFmpegError:
                 if dest.exists():
                     try:
@@ -610,6 +728,8 @@ def apply_overlays(
         time_offset=0.0,
         on_progress=on_progress,
     )
+    if expected_out is not None:
+        return ensure_clip_duration(dest, expected_out, label="efekt")
     return dest
 
 

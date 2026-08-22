@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import db as database
 from .config import settings
-from .ffmpeg_util import FFmpegError, apply_overlays, cut_media, probe_duration
+from .ffmpeg_util import FFmpegError, apply_overlays, cut_media, ensure_clip_duration, probe_duration
 from .kick import (
     KickError,
     ensure_live_playlist,
@@ -1253,6 +1253,8 @@ async def _ensure_segment_file(
                 quality="best",
                 on_progress=_dl_prog,
             )
+            # HLS remux can leave broken timestamps → YouTube shows wrong length + glitches
+            path = ensure_clip_duration(path, clip_len, label="kesit")
         if ov:
             def _ov_prog(frac: float) -> None:
                 _sync_job_progress(job_id, 48 + max(0.0, min(1.0, frac)) * 26, "exporting")
