@@ -2244,6 +2244,11 @@ body.is-resizing-panels * {
   resize: vertical;
 }
 
+.publish-side .btn.block {
+  flex-shrink: 0;
+  margin-top: 8px;
+}
+
 .publish-side .btn.primary.block {
   margin-top: auto;
   flex-shrink: 0;

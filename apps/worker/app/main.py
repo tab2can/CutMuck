@@ -1641,6 +1641,15 @@ async def jobs_youtube(request: Request, job_id: str, body: YoutubeUploadRequest
         await db.close()
 
 
+def _safe_download_name(title: str | None, job_id: str, kind: str) -> str:
+    raw = (title or "").strip() or f"cutmuck-{job_id[:8]}"
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "", raw).strip(" .")[:80]
+    if not cleaned:
+        cleaned = f"cutmuck-{job_id[:8]}"
+    suffix = "cut" if kind == "cut" else "source"
+    return f"{cleaned}_{suffix}.mp4"
+
+
 @app.get("/file/{job_id}")
 async def file_for_job(request: Request, job_id: str, kind: str = "source") -> FileResponse:
     db = await database.get_db()
@@ -1652,6 +1661,11 @@ async def file_for_job(request: Request, job_id: str, kind: str = "source") -> F
         path = Path(path_str)
         if not path.exists():
             raise HTTPException(404, "Dosya diskte yok")
-        return FileResponse(path, media_type="video/mp4", filename=path.name)
+        return FileResponse(
+            path,
+            media_type="video/mp4",
+            filename=_safe_download_name(job.get("title"), job_id, kind),
+            content_disposition_type="attachment",
+        )
     finally:
         await db.close()

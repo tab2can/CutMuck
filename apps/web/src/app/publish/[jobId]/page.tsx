@@ -52,6 +52,7 @@ function PublishInner() {
   const [description, setDescription] = useState("");
   const [privacy, setPrivacy] = useState<"public" | "unlisted" | "private">("unlisted");
   const [busy, setBusy] = useState(false);
+  const [dlBusy, setDlBusy] = useState(false);
   const [backgrounded, setBackgrounded] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [ytUrl, setYtUrl] = useState<string | null>(null);
@@ -59,6 +60,8 @@ function PublishInner() {
   const [thumbProject, setThumbProject] = useState<ThumbProject | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const thumbFileRef = useRef<HTMLInputElement>(null);
+
+  const locked = busy || dlBusy;
 
   useEffect(() => {
     void api<Job>(`/jobs/${jobId}`).then((data) => {
@@ -98,12 +101,12 @@ function PublishInner() {
   }, [jobId, settings?.youtube_privacy_default, push]);
 
   useEffect(() => {
-    if (!busy) return;
+    if (!locked) return;
     const el = videoRef.current;
     if (el) {
       el.pause();
     }
-  }, [busy]);
+  }, [locked]);
 
   const preview = useMemo(() => {
     if (job?.cut_url) return mediaSrc(job.cut_url);
@@ -113,6 +116,59 @@ function PublishInner() {
 
   const clipLen = endSec > startSec ? endSec - startSec : 0;
   const hasCut = Boolean(job?.cut_url);
+
+  function cutMatchesRange(j: Job | null) {
+    if (!j?.cut_url) return false;
+    const meta = j.meta || {};
+    const s = Number(meta.start_sec);
+    const e = Number(meta.end_sec);
+    if (!Number.isFinite(s) || !Number.isFinite(e)) return true;
+    return Math.abs(s - startSec) < 0.05 && Math.abs(e - endSec) < 0.05;
+  }
+
+  function triggerCutDownload() {
+    const a = document.createElement("a");
+    a.href = `/api/file/${jobId}?kind=cut`;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  async function downloadCut() {
+    if (!(endSec > startSec)) {
+      setMessage("Geçerli bir kesit aralığı yok — editöre dönüp In/Out ayarlayın");
+      return;
+    }
+    setDlBusy(true);
+    setMessage(
+      cutMatchesRange(job)
+        ? "Kesit indiriliyor…"
+        : "Kesit hazırlanıyor, ardından indirme başlar…"
+    );
+    try {
+      let ready = job;
+      if (!cutMatchesRange(ready)) {
+        ready = await api<Job>(`/jobs/${jobId}/cut`, {
+          method: "POST",
+          body: JSON.stringify({ start_sec: startSec, end_sec: endSec }),
+        });
+        setJob(ready);
+      }
+      if (!ready?.cut_url) {
+        throw new Error("Kesit dosyası oluşmadı");
+      }
+      triggerCutDownload();
+      setMessage(`İndirme başladı · ${formatBytes(ready.cut_size_bytes)}`);
+      push("Kesit indirmesi başladı", "ok");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "İndirme başarısız";
+      setMessage(msg);
+      push(msg, "error");
+    } finally {
+      setDlBusy(false);
+    }
+  }
 
   function captureFrame() {
     const v = videoRef.current;
@@ -213,7 +269,7 @@ function PublishInner() {
               startSec={startSec}
               endSec={endSec}
               videoRef={videoRef}
-              disabled={busy}
+              disabled={locked}
               autoPlay={false}
             />
           ) : (
@@ -241,6 +297,11 @@ function PublishInner() {
               ) : null}
             </div>
           ) : null}
+          {dlBusy ? (
+            <p className="muted" style={{ marginTop: 8 }}>
+              {message || "Kesit hazırlanıyor…"}
+            </p>
+          ) : null}
         </section>
       </div>
 
@@ -254,11 +315,11 @@ function PublishInner() {
             <span>Kapak yok</span>
           )}
           <div className="thumb-hover">
-            <button type="button" disabled={busy} onClick={() => thumbFileRef.current?.click()}>
+            <button type="button" disabled={locked} onClick={() => thumbFileRef.current?.click()}>
               Dosya yükle
               <span>PNG / JPEG · 16:9 otomatik</span>
             </button>
-            <button type="button" disabled={busy} onClick={() => setEditorOpen(true)}>
+            <button type="button" disabled={locked} onClick={() => setEditorOpen(true)}>
               Editör ile düzenle
               <span>Yazı, çerçeve, görseller</span>
             </button>
@@ -276,13 +337,13 @@ function PublishInner() {
           />
         </div>
         <div className="effect-row">
-          <button type="button" className="btn" disabled={busy} onClick={captureFrame}>
+          <button type="button" className="btn" disabled={locked} onClick={captureFrame}>
             Kareyi kapak yap
           </button>
           <button
             type="button"
             className="btn ghost"
-            disabled={busy || !(job?.meta?.thumbnail as string)}
+            disabled={locked || !(job?.meta?.thumbnail as string)}
             onClick={() => {
               const t = (job?.meta?.thumbnail as string) || null;
               setThumbDataUrl(t);
@@ -294,7 +355,12 @@ function PublishInner() {
         </div>
         <label className="field">
           <span>Başlık</span>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100} />
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            maxLength={100}
+            disabled={locked}
+          />
         </label>
         <label className="field">
           <span>Açıklama</span>
@@ -303,6 +369,7 @@ function PublishInner() {
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="Video açıklaması"
+            disabled={locked}
           />
         </label>
         <label className="field">
@@ -310,6 +377,7 @@ function PublishInner() {
           <select
             value={privacy}
             onChange={(e) => setPrivacy(e.target.value as typeof privacy)}
+            disabled={locked}
           >
             <option value="unlisted">Unlisted</option>
             <option value="public">Public</option>
@@ -328,11 +396,23 @@ function PublishInner() {
         ) : null}
         <button
           type="button"
+          className="btn block"
+          disabled={locked || !(endSec > startSec)}
+          onClick={() => void downloadCut()}
+        >
+          {dlBusy
+            ? "İndiriliyor…"
+            : cutMatchesRange(job)
+              ? "Bilgisayara indir"
+              : "Kesiti hazırla ve indir"}
+        </button>
+        <button
+          type="button"
           className="btn primary block"
-          disabled={busy || !title.trim() || !(endSec > startSec)}
+          disabled={locked || !title.trim() || !(endSec > startSec)}
           onClick={() => void upload()}
         >
-          {busy ? "Yükleniyor…" : hasCut ? "YouTube’a yükle (retry)" : "Kesit indir + yükle"}
+          {busy ? "Yükleniyor…" : hasCut ? "YouTube’a yükle" : "Kesit hazırla + YouTube’a yükle"}
         </button>
         {busy ? (
           <button type="button" className="btn ghost block" onClick={() => router.push("/")}>

@@ -37,6 +37,7 @@ async function proxy(req: NextRequest, path: string[]) {
       "content-range",
       "accept-ranges",
       "cache-control",
+      "content-disposition",
       "location",
     ]) {
       const value = res.headers.get(key);
