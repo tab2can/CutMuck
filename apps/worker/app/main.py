@@ -1439,6 +1439,47 @@ async def youtube_callback(
 _youtube_tasks: dict[str, asyncio.Task[None]] = {}
 
 
+def _cleanup_export_media(job_id: str, job: dict[str, Any] | None = None) -> None:
+    """Delete cut/thumb export files after a successful YouTube publish."""
+    paths: list[Path] = []
+    if job:
+        for key in ("cut_path",):
+            raw = job.get(key)
+            if raw:
+                paths.append(Path(str(raw)))
+    media = settings.media_dir
+    for pattern in (
+        f"{job_id}_cut.mp4",
+        f"{job_id}_cut_raw.mp4",
+        f"{job_id}_cut_yt.mp4",
+        f"{job_id}_cut_fix.mp4",
+        f"{job_id}_thumb.jpg",
+        f"{job_id}_thumb.jpeg",
+        f"{job_id}_thumb.png",
+    ):
+        paths.append(media / pattern)
+    # Catch leftover prepare/fix intermediates
+    try:
+        for p in media.glob(f"{job_id}_cut*"):
+            if p.is_file():
+                paths.append(p)
+        for p in media.glob(f"{job_id}_thumb*"):
+            if p.is_file():
+                paths.append(p)
+    except OSError:
+        pass
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path.resolve()) if path.exists() else str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _sync_upload_progress(job_id: str, frac: float) -> None:
     """Best-effort progress from the upload thread (aiosqlite not usable there)."""
     progress = round(70 + max(0.0, min(1.0, frac)) * 20, 1)
@@ -1667,6 +1708,8 @@ async def _run_youtube_pipeline(
             "processingStatus": final.get("processingStatus") or "succeeded",
             "processingProgress": final.get("processingProgress"),
         }
+        # Drop applied markers so a future re-export rebuilds from source HLS
+        meta.pop("overlays_applied", None)
         await database.update_job(
             db,
             job_id,
@@ -1675,7 +1718,10 @@ async def _run_youtube_pipeline(
             title=title,
             meta=meta,
             error=None,
+            cut_path=None,
         )
+        # Free disk once YouTube processing succeeded
+        await asyncio.to_thread(_cleanup_export_media, job_id, job)
     finally:
         await db.close()
         _youtube_tasks.pop(job_id, None)
